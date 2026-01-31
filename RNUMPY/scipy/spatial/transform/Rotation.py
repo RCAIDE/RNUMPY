@@ -16,78 +16,82 @@ sp  = rp.scipy_handle
 jnp = j.numpy
 
 class Rotation(): 
-    
-    def __init__():  
-        return
-    
+
+    @staticmethod
     def apply(R, vectors, inverse=False): 
-        if not rp.use_jax: return R.apply(vectors,inverse=vectors)
-        else: return R.apply()
+        return R.apply(vectors, inverse=inverse)
         
+    @staticmethod
     def as_euler(R, seq, degrees=False): 
-        if not rp.use_jax: return R.as_euler(seq=seq, degrees=degrees )
-        else: return R.as_euler(seq=seq, degrees=degrees)
+        return R.as_euler(seq=seq, degrees=degrees)
         
+    @staticmethod
     def as_matrix(R): 
-        if not rp.use_jax: return R.as_matrix()
-        else: return R.as_matrix()
+        return R.as_matrix()
         
+    @staticmethod
     def as_mrp(R): 
-        if not rp.use_jax: return R.as_mrp()
-        else: return R.as_mrp()
+        return R.as_mrp()
         
+    @staticmethod
     def as_quat(R, canonical=False, scalar_first=False): 
-        if not rp.use_jax: return R.as_quat(canonical=canonical, scalar_first=scalar_first)
-        else: return R.as_quat(canonical=canonical, scalar_first=scalar_first)
+        return R.as_quat(canonical=canonical, scalar_first=scalar_first)
         
+    @staticmethod
     def as_rotvec(R, degrees=False): 
-        if not rp.use_jax: return R.as_rotvec(degrees=degrees)
-        else: return R.as_rotvec(degrees=degrees)
+        return R.as_rotvec(degrees=degrees)
         
-    def concatenate(R,rotations): 
-        if not rp.use_jax: return R.concatenate(rotations=rotations)
-        else: return R.concatenate(rotations=rotations)
+    @staticmethod
+    def concatenate(rotations): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.concatenate(rotations=rotations)
+        else: return j.scipy.spatial.transform.Rotation.concatenate(rotations=rotations)
          
-    def from_euler(R,seq, angles, degrees=False): 
-        if not rp.use_jax: return R.from_euler(seq=seq, angles= angles, degrees=degrees)
-        else: return R.from_euler(seq=seq, angles= angles, degrees=degrees)
+    @staticmethod
+    def from_euler(seq, angles, degrees=False): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.from_euler(seq=seq, angles=angles, degrees=degrees)
+        else: return j.scipy.spatial.transform.Rotation.from_euler(seq=seq, angles=angles, degrees=degrees)
         
-    def from_matrix(R,matrix): 
-        if not rp.use_jax: return R.from_matrix(matrix=matrix)
-        else: return R.from_matrix(matrix=matrix)
+    @staticmethod
+    def from_matrix(matrix): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.from_matrix(matrix=matrix)
+        else: return j.scipy.spatial.transform.Rotation.from_matrix(matrix=matrix)
         
-    def from_mrp(R,mrp): 
-        if not rp.use_jax: return R.from_mrp(mrp=mrp)
-        else: return R.from_mrp(mrp=mrp)
+    @staticmethod
+    def from_mrp(mrp): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.from_mrp(mrp=mrp)
+        else: return j.scipy.spatial.transform.Rotation.from_mrp(mrp=mrp)
         
-    def from_quat(R,quat): 
-        if not rp.use_jax: return R.from_quat(quat=quat)
-        else: return R.from_quat(quat=quat)
+    @staticmethod
+    def from_quat(quat): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.from_quat(quat=quat)
+        else: return j.scipy.spatial.transform.Rotation.from_quat(quat=quat)
         
-    def from_rotvec(R,rotvec, degrees=False): 
-        if not rp.use_jax: return R.from_rotvec(rotvec=rotvec, degrees=degrees)
-        else: return R.from_rotvec(rotvec=rotvec, degrees=degrees)
+    @staticmethod
+    def from_rotvec(rotvec, degrees=False): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.from_rotvec(rotvec=rotvec, degrees=degrees)
+        else: return j.scipy.spatial.transform.Rotation.from_rotvec(rotvec=rotvec, degrees=degrees)
         
-    def identity(R, num=None): 
-        if not rp.use_jax: return R.identity(num=num)
-        else: return R.identity(num=num) 
+    @staticmethod
+    def identity(num=None): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.identity(num=num)
+        else: return j.scipy.spatial.transform.Rotation.identity(num=num) 
         
+    @staticmethod
     def inv(R): 
-        if not rp.use_jax: return R.inv()
-        else: return R.inv()
+        return R.inv()
         
+    @staticmethod
     def magnitude(R): 
-        if not rp.use_jax: return R.magnitude()
-        else: return R.magnitude()
+        return R.magnitude()
         
+    @staticmethod
     def mean(R, weights=None): 
-        if not rp.use_jax: return R.mean(weights=weights)
-        else: return R.mean(weights=weights)
+        return R.mean(weights=weights)
         
-    def random(R, num=None, random_state=None): 
-        if not rp.use_jax: return R.random()
-        else: return R.random( num=num, random_state=random_state)     
+    @staticmethod
+    def random(num=None, random_state=None): 
+        if not rp.use_jax: return sp.spatial.transform.Rotation.random(num=num, random_state=random_state)
+        else: return j.scipy.spatial.transform.Rotation.random(num=num, random_state=random_state)     
         
-    
     def count():    raise NotImplementedError 
-    def index():    raise NotImplementedError     
+    def index():    raise NotImplementedError 

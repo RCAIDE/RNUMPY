@@ -1252,13 +1252,28 @@ def vander(x, N=None, increasing=False):
         return jnp.vander(x, N=N, increasing=increasing)
 
 
+def polyval(p, x, *, unroll=16):
+    if not rp.use_jax:
+        return NumpyArray(np.polyval(p, x))
+    else:
+        return jnp.polyval(p, x, unroll=unroll)
+
+
 def bmat(): raise NotImplementedError
 
 
-def all(a, axis=None, out=None, keepdims=False, *, where=None): raise NotImplementedError
+def all(a, axis=None, out=None, keepdims=False, *, where=None):
+    if not rp.use_jax:
+        return NumpyArray(np.all(a, axis=axis, out=out, keepdims=keepdims, where=where))
+    else:
+        return jnp.all(a, axis=axis, out=out, keepdims=keepdims, where=where)
 
 
-def any(): raise NotImplementedError
+def any(a, axis=None, out=None, keepdims=False, *, where=None):
+    if not rp.use_jax:
+        return NumpyArray(np.any(a, axis=axis, out=out, keepdims=keepdims, where=where))
+    else:
+        return jnp.any(a, axis=axis, out=out, keepdims=keepdims, where=where)
 
 
 def isfinite(): raise NotImplementedError
