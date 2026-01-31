@@ -39,40 +39,48 @@ class _IndexUpdateRef:
     def set(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
         self.array[self.index] = values
+        return self.array
 
     def apply(self, func, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        raise('Not Implemented')
+        raise NotImplementedError('Not Implemented')
 
     def add(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index]+=values
+        self.array[self.index] += values
+        return self.array
 
     def subtract(self, values, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        self.array[self.index]-=values
+        self.array[self.index] -= values
+        return self.array
 
     def multiply(self, values, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        self.array[self.index]*=values
+        self.array[self.index] *= values
+        return self.array
 
     mul = multiply
 
     def divide(self, values, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        self.array[self.index]/=values
+        self.array[self.index] /= values
+        return self.array
 
     def power(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index]**=values
+        self.array[self.index] **= values
+        return self.array
 
     def min(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index] = np.minimum(self.array[self.index],values)
+        self.array[self.index] = np.minimum(self.array[self.index], values)
+        return self.array
 
     def max(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index] = np.maximum(self.arrays[self.index],values)
+        self.array[self.index] = np.maximum(self.array[self.index], values)
+        return self.array
   
 
 _array_operators = {}

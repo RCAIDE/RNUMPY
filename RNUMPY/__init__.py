@@ -25,6 +25,9 @@ jax_handle   = jax
 numpy_handle = np
 scipy_handle = sp
 
+# Set pi
+pi = 3.141592653589793
+
 
 # ----------------------------------------------------------------------------------------------------------------------
 #  Basic Array Stuff
@@ -56,6 +59,6 @@ _set_array_base_attributes(NumpyArray, exclude={'__getitem__'})
 from .src import *
 from .linalg import *
 from .lax import *
-from .scipy import *
+from . import scipy
 
 
