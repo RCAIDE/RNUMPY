@@ -281,7 +281,10 @@ def trunc(x):
 
 def prod(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=None, promote_integers=True):
     if not rp.use_jax:
-        return NumpyArray(np.prod(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.prod(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.prod(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where,
                         promote_integers=promote_integers)
@@ -289,8 +292,10 @@ def prod(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where
 
 def sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=None, promote_integers=True):
     if not rp.use_jax:
-        if initial is None: initial = np._NoValue
-        return NumpyArray(np.sum(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.sum(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.sum(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where,
                        promote_integers=promote_integers)
@@ -298,9 +303,11 @@ def sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=
 
 def nanprod(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=None, promote_integers=True):
     if not rp.use_jax:
-        if initial is None: initial = np._NoValue
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
         return NumpyArray(
-            np.nanprod(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where))
+            np.nanprod(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.nanprod(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where,
                            promote_integers=promote_integers)
@@ -308,9 +315,11 @@ def nanprod(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, wh
 
 def nansum(a, axis=None, dtype=None, out=None, keepdims=False, initial=None, where=None, promote_integers=True):
     if not rp.use_jax:
-        if initial is None: initial = np._NoValue
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
         return NumpyArray(
-            np.nansum(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where))
+            np.nansum(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.nansum(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, initial=initial, where=where,
                           promote_integers=promote_integers)
@@ -668,14 +677,20 @@ def maximum(x, y, /):
 
 def max(a, axis=None, out=None, keepdims=False, initial=None, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.max(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.max(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.max(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
 
 def amax(a, axis=None, out=None, keepdims=False, initial=None, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.amax(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.amax(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.amax(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
@@ -689,7 +704,10 @@ def fmax(x1, x2):
 
 def nanmax(a, axis=None, out=None, keepdims=False, initial=None, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.nanmax(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.nanmax(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.nanmax(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
@@ -703,14 +721,20 @@ def minimum(x, y, /):
 
 def min(a, axis=None, out=None, keepdims=False, initial=None, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.min(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.min(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.min(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
 
 def amin(a, axis=None, out=None, keepdims=False, initial=None, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.amin(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.amin(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.amin(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
@@ -724,7 +748,10 @@ def fmin(x1, x2):
 
 def nanmin(a, axis=None, out=None, keepdims=False, initial=None, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.nanmin(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where))
+        kwargs = {}
+        if initial is not None: kwargs['initial'] = initial
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.nanmin(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.nanmin(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
 
@@ -1264,14 +1291,18 @@ def bmat(): raise NotImplementedError
 
 def all(a, axis=None, out=None, keepdims=False, *, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.all(a, axis=axis, out=out, keepdims=keepdims, where=where))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.all(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.all(a, axis=axis, out=out, keepdims=keepdims, where=where)
 
 
 def any(a, axis=None, out=None, keepdims=False, *, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.any(a, axis=axis, out=out, keepdims=keepdims, where=where))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.any(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.any(a, axis=axis, out=out, keepdims=keepdims, where=where)
 
@@ -1797,15 +1828,19 @@ def average(a, axis=None, weights=None, returned=False, *, keepdims=False):
 
 def mean(a, axis=None, dtype=None, out=None, keepdims=False, *, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.mean(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.mean(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.mean(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
 
 
 def std(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None, correction=None):
     if not rp.use_jax:
-        return NumpyArray(np.std(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
-                                 correction=correction))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        if correction is not None: kwargs['correction'] = correction
+        return NumpyArray(np.std(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, **kwargs))
     else:
         return jnp.std(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
                        correction=correction)
@@ -1813,8 +1848,10 @@ def std(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, where=Non
 
 def var(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None, correction=None):
     if not rp.use_jax:
-        return NumpyArray(np.var(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
-                                 correction=correction))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        if correction is not None: kwargs['correction'] = correction
+        return NumpyArray(np.var(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, **kwargs))
     else:
         return jnp.var(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
                        correction=correction)
@@ -1829,15 +1866,19 @@ def nanmedian(a, axis=None, out=None, overwrite_input=False, keepdims=False):
 
 def nanmean(a, axis=None, dtype=None, out=None, keepdims=False, *, where=None):
     if not rp.use_jax:
-        return NumpyArray(np.nanmean(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        return NumpyArray(np.nanmean(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, **kwargs))
     else:
         return jnp.nanmean(a, axis=axis, dtype=dtype, out=out, keepdims=keepdims, where=where)
 
 
 def nanstd(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None, correction=None):
     if not rp.use_jax:
-        return NumpyArray(np.nanstd(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
-                                    correction=correction))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        if correction is not None: kwargs['correction'] = correction
+        return NumpyArray(np.nanstd(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, **kwargs))
     else:
         return jnp.nanstd(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
                           correction=correction)
@@ -1845,8 +1886,10 @@ def nanstd(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, where=
 
 def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, where=None, correction=None):
     if not rp.use_jax:
-        return NumpyArray(np.nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
-                                    correction=correction))
+        kwargs = {}
+        if where is not None: kwargs['where'] = where
+        if correction is not None: kwargs['correction'] = correction
+        return NumpyArray(np.nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, **kwargs))
     else:
         return jnp.nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, where=where,
                           correction=correction)
