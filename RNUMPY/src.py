@@ -1455,13 +1455,13 @@ def nonzero(a, *, size=None, fill_value=None):
         return jnp.nonzero(a, size=size, fill_value=fill_value)
 
 
-def where(condition, x=None, y=None, /, *, size=None, fill_value=None):
+def where(condition, x, y, /, *, size=None, fill_value=None):
     if not rp.use_jax:
         if x is None:
             warnings.warn("NP and JAX NP where have different behavior with a single input, check JAX documentation")
-        return NumpyArray(np.where(condition, x=x, y=y))
+        return NumpyArray(np.where(condition, x, y))
     else:
-        return jnp.where(condition, x=x, y=y, size=size, fill_value=fill_value)
+        return jnp.where(condition, x, y, size=size, fill_value=fill_value)
 
 
 def indices(dimensions, dtype=None, sparse=False):
