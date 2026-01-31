@@ -14,6 +14,13 @@ j   = rp.jax_handle
 np  = rp.numpy_handle
 sp  = rp.scipy_handle
 jnp = j.numpy
+if rp.jax_handle is not None:
+    try:
+        import jax.scipy.optimize
+    except ImportError:
+        pass
+
+joptmin = j.scipy.optimize.minimize if j is not None else None
 
 def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49012e-08, maxfev=0, band=None, epsfcn=None, factor=100, diag=None):
     if rp.use_jax:
@@ -32,11 +39,11 @@ def _jax_fsolve(func,x0,args,maxfev,tol):
 
     # run jax minimize on BFGS
     # TODO: make the tol's consistent with original scipy version
-    OR = j.scipy.minimize(wrap,x0,args,method='BFGS',tol=tol,options=options)
+    OR = joptmin(wrap,x0,args,method='BFGS',tol=tol,options=options)
 
     # Unpack into the same format as scipy
     x        = OR.x
-    infodict = {'nfev':OR.nfev,'njev':R.njev,'fvec':OR.fun,'fjac':OR.jac,'r':None,'qtf':None}
+    infodict = {'nfev':OR.nfev,'njev':OR.njev,'fvec':OR.fun,'fjac':OR.jac,'r':None,'qtf':None}
     ier      = OR.success
     mesg     = OR.status
 
