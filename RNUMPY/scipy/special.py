@@ -13,61 +13,193 @@ import RNUMPY as rp
 j   = rp.jax_handle
 np  = rp.numpy_handle
 sp  = rp.scipy_handle
-jnp = j.numpy 
+tr  = rp.torch_handle
+
+if j is not None:
+    try:
+        import jax.scipy.special
+    except ImportError:
+        pass
+
+js  = j.scipy.special if j else None
+ss  = sp.special if sp is not None else None
+tf  = tr.special if tr else None
 
 def fresnel(x): 
-    if not rp.use_jax: return np.fresnel(x)
-    else: return jnp.fresnel(x)
+    if rp.use_jax: return js.fresnel(x)
+    elif rp.use_torch: raise NotImplementedError('fresnel not supported for Torch')
+    else: return ss.fresnel(x)
     
 def factorial(n, exact=False): 
-    if not rp.use_jax: return np.factorial(n, exact=exact)
-    else: return jnp.factorial(n, exact=exact)
+    if rp.use_jax: return js.factorial(n, exact=exact)
+    elif rp.use_torch: return rp.TorchArray(tr.exp(tr.lgamma(n + 1)))
+    else: return ss.factorial(n, exact=exact)
     
 def gamma(x): 
-    if not rp.use_jax: return np.gamma(x)
-    else: return jnp.gamma(x) 
+    if rp.use_jax: return js.gamma(x)
+    elif rp.use_torch: return rp.TorchArray(ts.gamma(x))
+    else: return ss.gamma(x) 
 
-def bernoilli():    raise NotImplementedError
-def beta():         raise NotImplementedError
-def betainc():      raise NotImplementedError
-def betaln():       raise NotImplementedError
-def digamma():      raise NotImplementedError
-def entr():         raise NotImplementedError
-def erf():          raise NotImplementedError
-def erfc():         raise NotImplementedError
-def erfinv():       raise NotImplementedError
-def exp1():         raise NotImplementedError
-def expi():         raise NotImplementedError
-def expit():        raise NotImplementedError
-def expn():         raise NotImplementedError 
-def gammainc():     raise NotImplementedError
-def gammaincc():    raise NotImplementedError
-def gammaln():      raise NotImplementedError
-def gammasgn():     raise NotImplementedError
-def hyp1f1():       raise NotImplementedError 
-def i0():           raise NotImplementedError
-def i0e():          raise NotImplementedError
-def i1():           raise NotImplementedError
-def i1e():          raise NotImplementedError
-def kl_div():       raise NotImplementedError
-def log_ndtr():     raise NotImplementedError
-def log_softmax():  raise NotImplementedError
-def logit():        raise NotImplementedError
-def logsumexp():    raise NotImplementedError
-def lpmn():         raise NotImplementedError
-def lpmn_values():  raise NotImplementedError
-def multigammaln(): raise NotImplementedError
-def ndtr():         raise NotImplementedError
-def ndtri():        raise NotImplementedError
-def poch():         raise NotImplementedError
-def polygamma():    raise NotImplementedError
-def rel_entr():     raise NotImplementedError
-def softmax():      raise NotImplementedError
-def spence():       raise NotImplementedError
-def sph_harm():     raise NotImplementedError
-def xlog1py():      raise NotImplementedError
-def xlogy():        raise NotImplementedError
-def zeta():         raise NotImplementedError 
+def bernoulli(n):
+    if rp.use_jax: return js.bernoulli(n)
+    else: return ss.bernoulli(n)
+
+def beta(p, q):
+    if rp.use_jax: return js.beta(p, q)
+    elif rp.use_torch: return rp.TorchArray(ts.beta(p, q))
+    else: return ss.beta(p, q)
+
+def betainc(a, b, x):
+    if rp.use_jax: return js.betainc(a, b, x)
+    elif rp.use_torch: return rp.TorchArray(ts.betainc(a, b, x))
+    else: return ss.betainc(a, b, x)
+
+def betaln(a, b):
+    if rp.use_jax: return js.betaln(a, b)
+    elif rp.use_torch: return rp.TorchArray(ts.betaln(a, b))
+    else: return ss.betaln(a, b)
+
+def digamma(x):
+    if rp.use_jax: return js.digamma(x)
+    elif rp.use_torch: return rp.TorchArray(ts.digamma(x))
+    else: return ss.digamma(x)
+
+def entr(x):
+    if rp.use_jax: return js.entr(x)
+    elif rp.use_torch: return rp.TorchArray(ts.entr(x))
+    else: return ss.entr(x)
+
+def erf(x):
+    if rp.use_jax: return js.erf(x)
+    elif rp.use_torch: return rp.TorchArray(tr.erf(x))
+    else: return ss.erf(x)
+
+def erfc(x):
+    if rp.use_jax: return js.erfc(x)
+    elif rp.use_torch: return rp.TorchArray(tr.erfc(x))
+    else: return ss.erfc(x)
+
+def erfinv(x):
+    if rp.use_jax: return js.erfinv(x)
+    elif rp.use_torch: return rp.TorchArray(tr.erfinv(x))
+    else: return ss.erfinv(x)
+
+def exp1(x):
+    if rp.use_jax: return js.exp1(x)
+    elif rp.use_torch: return rp.TorchArray(ts.exp1(x))
+    else: return ss.exp1(x)
+
+def expi(x):
+    if rp.use_jax: return js.expi(x)
+    elif rp.use_torch: return rp.TorchArray(ts.expi(x))
+    else: return ss.expi(x)
+
+def expit(x):
+    if rp.use_jax: return js.expit(x)
+    elif rp.use_torch: return rp.TorchArray(tr.sigmoid(x))
+    else: return ss.expit(x)
+
+def expn(n, x):
+    if rp.use_jax: return js.expn(n, x)
+    else: return ss.expn(n, x)
+
+def gammainc(a, x):
+    if rp.use_jax: return js.gammainc(a, x)
+    elif rp.use_torch: return rp.TorchArray(ts.gammainc(a, x))
+    else: return ss.gammainc(a, x)
+
+def gammaincc(a, x):
+    if rp.use_jax: return js.gammaincc(a, x)
+    elif rp.use_torch: return rp.TorchArray(ts.gammaincc(a, x))
+    else: return ss.gammaincc(a, x)
+
+def gammaln(x):
+    if rp.use_jax: return js.gammaln(x)
+    elif rp.use_torch: return rp.TorchArray(tr.lgamma(x))
+    else: return ss.gammaln(x)
+
+def i0(x):
+    if rp.use_jax: return js.i0(x)
+    elif rp.use_torch: return rp.TorchArray(ts.i0(x))
+    else: return ss.i0(x)
+
+def i0e(x):
+    if rp.use_jax: return js.i0e(x)
+    elif rp.use_torch: return rp.TorchArray(ts.i0e(x))
+    else: return ss.i0e(x)
+
+def i1(x):
+    if rp.use_jax: return js.i1(x)
+    elif rp.use_torch: return rp.TorchArray(ts.i1(x))
+    else: return ss.i1(x)
+
+def i1e(x):
+    if rp.use_jax: return js.i1e(x)
+    elif rp.use_torch: return rp.TorchArray(ts.i1e(x))
+    else: return ss.i1e(x)
+
+def log_ndtr(x):
+    if rp.use_jax: return js.log_ndtr(x)
+    elif rp.use_torch: return rp.TorchArray(ts.log_ndtr(x))
+    else: return ss.log_ndtr(x)
+
+def log_softmax(x, axis=None):
+    if rp.use_jax: return js.log_softmax(x, axis=axis)
+    elif rp.use_torch: return rp.TorchArray(tr.log_softmax(x, dim=axis))
+    else: return ss.log_softmax(x, axis=axis)
+
+def logit(x):
+    if rp.use_jax: return js.logit(x)
+    elif rp.use_torch: return rp.TorchArray(tr.logit(x))
+    else: return ss.logit(x)
+
+def logsumexp(a, axis=None, b=None, keepdims=False, return_sign=False):
+    if rp.use_jax: return js.logsumexp(a, axis=axis, b=b, keepdims=keepdims, return_sign=return_sign)
+    else: return ss.logsumexp(a, axis=axis, b=b, keepdims=keepdims, return_sign=return_sign)
+
+def multigammaln(a, d):
+    if rp.use_jax: return js.multigammaln(a, d)
+    elif rp.use_torch: return rp.TorchArray(ts.multigammaln(a, d))
+    else: return ss.multigammaln(a, d)
+
+def ndtr(x):
+    if rp.use_jax: return js.ndtr(x)
+    elif rp.use_torch: return rp.TorchArray(ts.ndtr(x))
+    else: return ss.ndtr(x)
+
+def ndtri(x):
+    if rp.use_jax: return js.ndtri(x)
+    elif rp.use_torch: return rp.TorchArray(ts.ndtri(x))
+    else: return ss.ndtri(x)
+
+def poch(z, m):
+    if rp.use_jax: return js.poch(z, m)
+    else: return ss.poch(z, m)
+
+def polygamma(n, x):
+    if rp.use_jax: return js.polygamma(n, x)
+    elif rp.use_torch: return rp.TorchArray(ts.polygamma(n, x))
+    else: return ss.polygamma(n, x)
+
+def softmax(x, axis=None):
+    if rp.use_jax: return js.softmax(x, axis=axis)
+    elif rp.use_torch: return rp.TorchArray(tr.softmax(x, dim=axis))
+    else: return ss.softmax(x, axis=axis)
+
+def xlog1py(x, y):
+    if rp.use_jax: return js.xlog1py(x, y)
+    elif rp.use_torch: return rp.TorchArray(ts.xlog1py(x, y))
+    else: return ss.xlog1py(x, y)
+
+def xlogy(x, y):
+    if rp.use_jax: return js.xlogy(x, y)
+    elif rp.use_torch: return rp.TorchArray(ts.xlogy(x, y))
+    else: return ss.xlogy(x, y)
+
+def zeta(x, q=None):
+    if rp.use_jax: return js.zeta(x, q)
+    elif rp.use_torch: return rp.TorchArray(ts.zeta(x, q))
+    else: return ss.zeta(x, q)
 
 
 

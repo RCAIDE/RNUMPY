@@ -8,135 +8,184 @@ import RNUMPY as rp
 
 j   = rp.jax_handle
 np  = rp.numpy_handle
-jnp = j.numpy
-
-jl = jnp.linalg
+tr  = rp.torch_handle
+jnp = j.numpy if j else None
+jl = jnp.linalg if jnp else None
 nl = np.linalg
+tl = tr.linalg if tr else None
 
 def multi_dot(arrays, *, precision=None):
-    if not rp.use_jax: return nl.multi_dot(arrays, out=precision)
-    else: return jl.multi_dot(arrays, precision=precision)
+    if rp.use_jax: return jl.multi_dot(arrays, precision=precision)
+    elif rp.use_torch:
+        # torch doesn't have multi_dot directly in linalg, but we can implement sequentially
+        res = arrays[0]
+        for a in arrays[1:]:
+            res = tr.matmul(res, a)
+        return rp.TorchArray(res)
+    else: return rp.NumpyArray(nl.multi_dot(arrays, out=precision))
     
 def cross(x1, x2, /, *, axis=-1):
-    if not rp.use_jax: return nl.cross(x1, x2, axis=axis)
-    else: return jl.cross(x1, x2, axis=axis)
+    if rp.use_jax: return jl.cross(x1, x2, axis=axis)
+    elif rp.use_torch: return rp.TorchArray(tr.cross(x1, x2, dim=axis))
+    else: return rp.NumpyArray(nl.cross(x1, x2, axis=axis))
     
 def cholesky(a, *, upper=False):
-    if not rp.use_jax: return nl.cholesky(a, upper=upper)
-    else: return jl.cholesky(a, upper=upper)
+    if rp.use_jax: return jl.cholesky(a, upper=upper)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.cholesky(a, upper=upper))
+    else: return rp.NumpyArray(nl.cholesky(a, upper=upper))
     
 def outer(x1, x2, /):
-    if not rp.use_jax: return nl.outer(x1, x2)
-    else: return jl.outer(x1, x2)
+    if rp.use_jax: return jl.outer(x1, x2)
+    elif rp.use_torch: return rp.TorchArray(tr.outer(x1, x2))
+    else: return rp.NumpyArray(nl.outer(x1, x2))
     
 def qr(a, mode='reduced'):
-    if not rp.use_jax: return nl.qr(a, mode=mode)
-    else: return jl.qr(a, mode=mode)
+    if rp.use_jax: return jl.qr(a, mode=mode)
+    elif rp.use_torch:
+        Q, R = tr.linalg.qr(a, mode='reduced' if mode == 'reduced' else 'complete')
+        return rp.TorchArray(Q), rp.TorchArray(R)
+    else: return rp.NumpyArray(nl.qr(a, mode=mode))
     
 def svd(a, full_matrices=True, *, compute_uv=True, hermitian=False, subset_by_index=None):
-    if not rp.use_jax: return nl.svd(a, full_matrices=full_matrices, compute_uv=compute_uv)
-    else: return jl.svd(a, full_matrices=full_matrices, compute_uv=compute_uv,
+    if rp.use_jax: return jl.svd(a, full_matrices=full_matrices, compute_uv=compute_uv,
                         hermitian=hermitian, subset_by_index=subset_by_index)
+    elif rp.use_torch:
+        res = tr.linalg.svd(a, full_matrices=full_matrices)
+        return tuple(rp.TorchArray(r) for r in res)
+    else: return rp.NumpyArray(nl.svd(a, full_matrices=full_matrices, compute_uv=compute_uv))
     
 def svdvals(x, /):
-    if not rp.use_jax: return nl.svdvals(x)
-    else: return jl.svdvals(x)
+    if rp.use_jax: return jl.svdvals(x)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.svdvals(x))
+    else: return rp.NumpyArray(nl.svdvals(x))
     
 def eig(a):
-    if not rp.use_jax: return nl.eig(a)
-    else: return jl.eig(a)
+    if rp.use_jax: return jl.eig(a)
+    elif rp.use_torch:
+        vals, vecs = tr.linalg.eig(a)
+        return rp.TorchArray(vals), rp.TorchArray(vecs)
+    else: return rp.NumpyArray(nl.eig(a))
     
 def eigh(a, UPLO=None, symmetrize_input=True):
-    if not rp.use_jax: return nl.eigh(a, UPLO=UPLO)
-    else: return jl.eigh(a, UPLO=UPLO, symmetrize_input=symmetrize_input)
+    if rp.use_jax: return jl.eigh(a, UPLO=UPLO, symmetrize_input=symmetrize_input)
+    elif rp.use_torch:
+        vals, vecs = tr.linalg.eigh(a, UPLO=UPLO if UPLO else 'L')
+        return rp.TorchArray(vals), rp.TorchArray(vecs)
+    else: return rp.NumpyArray(nl.eigh(a, UPLO=UPLO))
     
 def eigvals(a):
-    if not rp.use_jax: return nl.eigvals(a)
-    else: return jl.eigvals(a)
+    if rp.use_jax: return jl.eigvals(a)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.eigvals(a))
+    else: return rp.NumpyArray(nl.eigvals(a))
     
 def eigvalsh(a, UPLO='L'):
-    if not rp.use_jax: return nl.eigvalsh(a, UPLO=UPLO)
-    else: return jl.eigvalsh(a, UPLO=UPLO)
+    if rp.use_jax: return jl.eigvalsh(a, UPLO=UPLO)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.eigvalsh(a, UPLO=UPLO))
+    else: return rp.NumpyArray(nl.eigvalsh(a, UPLO=UPLO))
     
 def norm(x, ord=None, axis=None, keepdims=False):
-    if not rp.use_jax: return nl.norm(x, ord=ord, axis=axis, keepdims=keepdims)
-    else: return jl.norm(x, ord=ord, axis=axis, keepdims=keepdims)
+    if rp.use_jax: return jl.norm(x, ord=ord, axis=axis, keepdims=keepdims)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.norm(x, ord=ord, dim=axis, keepdim=keepdims))
+    else: return rp.NumpyArray(nl.norm(x, ord=ord, axis=axis, keepdims=keepdims))
     
 def matrix_norm(x, /, *, keepdims=False, ord='fro'):
-    if not rp.use_jax: return nl.matrix_norm(x, keepdims=keepdims, ord=ord)
-    else: return jl.matrix_norm(x, keepdims=keepdims, ord=ord)
+    if rp.use_jax: return jl.matrix_norm(x, keepdims=keepdims, ord=ord)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.matrix_norm(x, ord=ord, keepdim=keepdims))
+    else: return rp.NumpyArray(nl.matrix_norm(x, keepdims=keepdims, ord=ord))
     
 def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
-    if not rp.use_jax: return nl.vector_norm(x, axis=axis, keepdims=keepdims, ord=ord)
-    else: return jl.vector_norm(x, axis=axis, keepdims=keepdims, ord=ord)
+    if rp.use_jax: return jl.vector_norm(x, axis=axis, keepdims=keepdims, ord=ord)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.vector_norm(x, ord=ord, dim=axis, keepdim=keepdims))
+    else: return rp.NumpyArray(nl.vector_norm(x, axis=axis, keepdims=keepdims, ord=ord))
     
 def cond(x, p=None):
-    if not rp.use_jax: return nl.cond(x, p=p)
-    else: return jl.cond(x, p=p)
+    if rp.use_jax: return jl.cond(x, p=p)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.cond(x, p=p))
+    else: return rp.NumpyArray(nl.cond(x, p=p))
     
 def det(a):
-    if not rp.use_jax: return nl.det(a)
-    else: return jl.det(a)
+    if rp.use_jax: return jl.det(a)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.det(a))
+    else: return rp.NumpyArray(nl.det(a))
     
 def matrix_rank(M, rtol=None, *, tol=None):
-    if not rp.use_jax: return nl.matrix_rank(M, tol=tol, hermitian=False, rtol=rtol)
-    else: return jl.matrix_rank(M, rtol=rtol, tol=tol)
+    if rp.use_jax: return jl.matrix_rank(M, rtol=rtol, tol=tol)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.matrix_rank(M, tol=tol if tol is not None else rtol))
+    else: return rp.NumpyArray(nl.matrix_rank(M, tol=tol, hermitian=False, rtol=rtol))
     
 def slogdet(a, *, method=None):
-    if not rp.use_jax: return nl.slogdet(a)
-    else: return jl.slogdet(a, method=method)
+    if rp.use_jax: return jl.slogdet(a, method=method)
+    elif rp.use_torch:
+        sign, logdet = tr.linalg.slogdet(a)
+        return rp.TorchArray(sign), rp.TorchArray(logdet)
+    else: return rp.NumpyArray(nl.slogdet(a))
     
 def matrix_power(a, n):
-    if not rp.use_jax: return nl.matrix_power(a, n)
-    else: return jl.matrix_power(a, n)
+    if rp.use_jax: return jl.matrix_power(a, n)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.matrix_power(a, n))
+    else: return rp.NumpyArray(nl.matrix_power(a, n))
     
 def tensordot(x1, x2, /, *, axes=2, precision=None, preferred_element_type=None):
-    if not rp.use_jax: return nl.tensordot(x1, x2, axes=axes)
-    else: return jl.tensordot(x1, x2, axes=axes, precision=precision, preferred_element_type=preferred_element_type)
+    if rp.use_jax: return jl.tensordot(x1, x2, axes=axes, precision=precision, preferred_element_type=preferred_element_type)
+    elif rp.use_torch: return rp.TorchArray(tr.tensordot(x1, x2, dims=axes))
+    else: return rp.NumpyArray(nl.tensordot(x1, x2, axes=axes))
     
 def matmul(x1, x2, /, *, precision=None, preferred_element_type=None):
-    if not rp.use_jax: return nl.matmul(x1, x2)
-    else: return jl.matmul(x1, x2, precision=precision, preferred_element_type=preferred_element_type)
+    if rp.use_jax: return jl.matmul(x1, x2, precision=precision, preferred_element_type=preferred_element_type)
+    elif rp.use_torch: return rp.TorchArray(tr.matmul(x1, x2))
+    else: return rp.NumpyArray(nl.matmul(x1, x2))
     
 def trace(x, /, *, offset=0, dtype=None):
-    if not rp.use_jax: return nl.trace(x, offset=offset, dtype=dtype)
-    else: return jl.trace(x, offset=offset, dtype=dtype)
+    if rp.use_jax: return jl.trace(x, offset=offset, dtype=dtype)
+    elif rp.use_torch: return rp.TorchArray(tr.trace(x)) # Note: torch.trace only for 2D, offset not supported easily
+    else: return rp.NumpyArray(np.trace(x, offset=offset, dtype=dtype))
     
 def solve(a, b):
-    if not rp.use_jax: return nl.solve(a, b)
-    else: return jl.solve(a, b)
+    if rp.use_jax: return jl.solve(a, b)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.solve(a, b))
+    else: return rp.NumpyArray(nl.solve(a, b))
     
 def tensorsolve(a, b, axes=None):
-    if not rp.use_jax: return nl.tensorsolve(a, b, axes=axes)
-    else: return jl.tensorsolve(a, b, axes=axes)
+    if rp.use_jax: return jl.tensorsolve(a, b, axes=axes)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.tensorsolve(a, b, dims=axes))
+    else: return rp.NumpyArray(nl.tensorsolve(a, b, axes=axes))
     
 def lstsq(a, b, rcond=None, *, numpy_resid=False):
-    if not rp.use_jax: return nl.lstsq(a, b, rcond=rcond)
-    else: return jl.lstsq(a, b, rcond=rcond, numpy_resid=numpy_resid)
+    if rp.use_jax: return jl.lstsq(a, b, rcond=rcond, numpy_resid=numpy_resid)
+    elif rp.use_torch:
+        res = tr.linalg.lstsq(a, b, rcond=rcond)
+        return tuple(rp.TorchArray(r) for r in res)
+    else: return rp.NumpyArray(nl.lstsq(a, b, rcond=rcond))
     
 def inv(a):
-    if not rp.use_jax: return nl.inv(a)
-    else: return jl.inv(a)
+    if rp.use_jax: return jl.inv(a)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.inv(a))
+    else: return rp.NumpyArray(nl.inv(a))
     
 def pinv(a, rtol=None, hermitian=False, *, rcond=None):
-    if not rp.use_jax: return nl.pinv(a, rcond=rcond, hermitian=hermitian, rtol=rtol)
-    else: return jl.pinv(a, rtol=rtol, hermitian=hermitian, rcond=rcond)
+    if rp.use_jax: return jl.pinv(a, rtol=rtol, hermitian=hermitian, rcond=rcond)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.pinv(a, rcond=rcond if rcond is not None else rtol, hermitian=hermitian))
+    else: return rp.NumpyArray(nl.pinv(a, rcond=rcond, hermitian=hermitian, rtol=rtol))
     
 def tensorinv(a, ind=2):
-    if not rp.use_jax: return nl.tensorinv(a, ind=ind)
-    else: return jl.tensorinv(a, ind=ind)
+    if rp.use_jax: return jl.tensorinv(a, ind=ind)
+    elif rp.use_torch: return rp.TorchArray(tr.linalg.tensorinv(a, ind=ind))
+    else: return rp.NumpyArray(nl.tensorinv(a, ind=ind))
     
 def diagonal(x, /, *, offset=0):
-    if not rp.use_jax: return nl.diagonal(x, offset=offset)
-    else: return jl.diagonal(x, offset=offset)
+    if rp.use_jax: return jl.diagonal(x, offset=offset)
+    elif rp.use_torch: return rp.TorchArray(tr.diagonal(x, offset=offset))
+    else: return rp.NumpyArray(np.diagonal(x, offset=offset))
     
 def matrix_transpose(x, /):
-    if not rp.use_jax: return nl.matrix_transpose(x)
-    else: return jl.matrix_transpose(x)
+    if rp.use_jax: return jl.matrix_transpose(x)
+    elif rp.use_torch: return rp.TorchArray(tr.transpose(x, -2, -1))
+    else: return rp.NumpyArray(nl.matrix_transpose(x))
     
 def LinAlgError(): raise NotImplementedError
     
 def vecdot(x1, x2, /, *, axis=-1, precision=None, preferred_element_type=None):
-    if not rp.use_jax: return nl.vecdot(x1, x2, axis=axis)
-    else: return jl.vecdot(x1, x2, axis=axis, precision=precision, preferred_element_type=preferred_element_type)
+    if rp.use_jax: return jl.vecdot(x1, x2, axis=axis, precision=precision, preferred_element_type=preferred_element_type)
+    elif rp.use_torch: return rp.TorchArray(tr.vecdot(x1, x2, dim=axis))
+    else: return rp.NumpyArray(nl.vecdot(x1, x2, axis=axis))
     
