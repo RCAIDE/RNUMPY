@@ -49,6 +49,17 @@ use_torch    = False
 # Set pi
 pi = 3.141592653589793
 
+# x64 toggle
+x64_enabled = False
+
+def enable_x64(enabled=True):
+    global x64_enabled
+    x64_enabled = enabled
+    if torch_handle is not None:
+        torch_handle.set_default_dtype(torch_handle.float64 if enabled else torch_handle.float32)
+    if jax_handle is not None:
+        jax_handle.config.update("jax_enable_x64", enabled)
+
 # For JAX this is straight numpy
 from numpy import inf, newaxis, nan
 
@@ -239,6 +250,19 @@ if torch is not None:
                  return TorchArray(torch.any(self, dim=dim, keepdim=bool(keepdims), out=out))
             return TorchArray(torch.any(self))
 
+        def ravel(self, order='C'):
+            if order == 'C':
+                return TorchArray(self.reshape(-1))
+            elif order == 'F':
+                return TorchArray(self.permute(tuple(reversed(range(self.dim())))).reshape(-1))
+            elif order == 'A' or order == 'K':
+                return TorchArray(self.reshape(-1))
+            else:
+                raise ValueError(f"order '{order}' not understood")
+
+        def flatten(self, order='C'):
+            return self.ravel(order=order)
+
         def __len__(self):
             if self.dim() == 0:
                 return 1
@@ -268,6 +292,7 @@ _set_array_base_attributes(TorchArray, exclude={'__getitem__'})
 from .src import *
 from .linalg import *
 from .lax import *
+from .autograd import *
 from . import scipy
 
 

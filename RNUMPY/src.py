@@ -1453,6 +1453,11 @@ def einsum(subscript: str, /, *operands, out=None, optimize: str | bool | list[t
                           preferred_element_type=preferred_element_type)
     elif rp.use_torch:
         ops = [tr.as_tensor(o) for o in operands]
+        float_ops = [o for o in ops if tr.is_floating_point(o)]
+        if float_ops:
+            import builtins
+            highest = builtins.max(float_ops, key=lambda o: tr.finfo(o.dtype).bits).dtype
+            ops = [o.to(highest) if tr.is_floating_point(o) else o for o in ops]
         return TorchArray(tr.einsum(subscript, *ops))
     else:
         return NumpyArray(np.einsum(subscript, *operands, out=out, order='K', casting='safe', optimize=optimize))
@@ -3674,7 +3679,64 @@ def rot90(m, k=1, axes=(0, 1)):
         return TorchArray(tr.rot90(m, k=k, dims=axes))
     else:
         return NumpyArray(np.rot90(m, k=k, axes=axes))
-  # def 	lib.npyio.NpzFile	(): raise NotImplementedError
+
+
+def trapezoid(y, x=None, dx=1.0, axis=-1):
+    if rp.use_jax:
+        if builtins.hasattr(jnp, 'trapezoid'):
+            return jnp.trapezoid(y, x=x, dx=dx, axis=axis)
+        else:
+            return jnp.trapz(y, x=x, dx=dx, axis=axis)
+    elif rp.use_torch:
+        y_t = tr.as_tensor(y)
+        x_t = tr.as_tensor(x) if x is not None else None
+        
+        func = builtins.getattr(tr, 'trapezoid', builtins.getattr(tr, 'trapz', None))
+        if func is None:
+            raise NotImplementedError('trapezoid not found in this version of Torch')
+            
+        kwargs = {'dim': axis}
+        if x_t is not None: kwargs['x'] = x_t
+        else: kwargs['dx'] = dx
+            
+        return TorchArray(func(y_t, **kwargs))
+    else:
+        if builtins.hasattr(np, 'trapezoid'):
+            return NumpyArray(np.trapezoid(y, x=x, dx=dx, axis=axis))
+        else:
+            return NumpyArray(np.trapz(y, x=x, dx=dx, axis=axis))
+
+
+def roots(p):
+    if rp.use_jax:
+        return jnp.roots(p)
+    elif rp.use_torch:
+        p_t = tr.atleast_1d(tr.as_tensor(p))
+        if p_t.numel() == 0:
+            return TorchArray(tr.empty(0, device=p_t.device, dtype=tr.complex64))
+        
+        nonzero_idx = tr.nonzero(p_t, as_tuple=True)[0]
+        if nonzero_idx.numel() == 0:
+            return TorchArray(tr.empty(0, device=p_t.device, dtype=tr.complex64))
+            
+        p_t = p_t[nonzero_idx[0]:]
+        
+        if p_t.numel() < 2:
+            return TorchArray(tr.empty(0, device=p_t.device, dtype=tr.complex64))
+            
+        if not p_t.is_floating_point() and not p_t.is_complex():
+            p_t = p_t.to(tr.float64)
+            
+        N = p_t.numel() - 1
+        A = tr.zeros((N, N), dtype=p_t.dtype, device=p_t.device)
+        A[1:, :-1] = tr.eye(N - 1, dtype=p_t.dtype, device=p_t.device)
+        A[0, :] = -p_t[1:] / p_t[0]
+        
+        return TorchArray(tr.linalg.eigvals(A))
+    else:
+        return NumpyArray(np.roots(p))
+
+# def 	lib.npyio.NpzFile	(): raise NotImplementedError
 # def 	rec.array	(): raise NotImplementedError
 # def 	rec.fromarrays	(): raise NotImplementedError
 # def 	rec.fromrecords	(): raise NotImplementedError
@@ -3691,3 +3753,4 @@ def rot90(m, k=1, axes=(0, 1)):
 # def 	lib.format.open_memmap	(): raise NotImplementedError
 # def 	lib.npyio.DataSource	(): raise NotImplementedError
 # def 	lib.form	(): raise NotImplementedError
+

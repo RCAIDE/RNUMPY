@@ -22,7 +22,7 @@ if j is not None:
         pass
 
 jf  = j.scipy.fft if j else None
-# sf  = sp.fft if sp is not None else None
+sf  = sp.fft if sp is not None else None
 tf  = tr.fft if tr else None
     
 def dct(x,type=2, n=None, axis=-1, norm=None): 
@@ -44,4 +44,8 @@ def idctn(x, type=2, s=None, axes=None, norm=None):
     if rp.use_jax: return jf.idctn(x, type=type, s=s, axes=axes, norm=norm)
     elif rp.use_torch: raise NotImplementedError('idctn not supported for Torch')
     else: return sf.idctn(x,type=type, s=s, axes=axes, norm=norm)
-   
+
+def rfft(x, n=None, axis=-1, norm=None):
+    if rp.use_jax: return j.numpy.fft.rfft(x, n=n, axis=axis, norm=norm)
+    elif rp.use_torch: return tf.rfft(x, n=n, dim=axis, norm=norm)
+    else: return sf.rfft(x, n=n, axis=axis, norm=norm)

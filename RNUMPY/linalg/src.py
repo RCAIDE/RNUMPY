@@ -186,6 +186,11 @@ def LinAlgError(): raise NotImplementedError
     
 def vecdot(x1, x2, /, *, axis=-1, precision=None, preferred_element_type=None):
     if rp.use_jax: return jl.vecdot(x1, x2, axis=axis, precision=precision, preferred_element_type=preferred_element_type)
-    elif rp.use_torch: return rp.TorchArray(tr.vecdot(x1, x2, dim=axis))
+    elif rp.use_torch:
+        if hasattr(tr.linalg, 'vecdot'):
+            return rp.TorchArray(tr.linalg.vecdot(x1, x2, dim=axis))
+        else:
+            # Fallback for older torch versions
+            return rp.TorchArray((x1 * x2).sum(dim=axis))
     else: return rp.NumpyArray(nl.vecdot(x1, x2, axis=axis))
     

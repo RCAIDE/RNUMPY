@@ -23,7 +23,7 @@ if j is not None:
 
 js  = j.scipy.special if j else None
 ss  = sp.special if sp is not None else None
-tf  = tr.special if tr else None
+ts  = tr.special if tr else None
 
 def fresnel(x): 
     if rp.use_jax: return js.fresnel(x)
@@ -137,6 +137,48 @@ def i1e(x):
     if rp.use_jax: return js.i1e(x)
     elif rp.use_torch: return rp.TorchArray(ts.i1e(x))
     else: return ss.i1e(x)
+
+def jv(v, z):
+    if rp.use_jax:
+        if hasattr(js, 'jv'): return js.jv(v, z)
+        if isinstance(v, (int, np.integer)):
+             # JAX's bessel_jn(z, v) returns orders 0, 1, ..., v
+             # v must be a non-negative integer for this to work as expected
+             if v >= 0:
+                 return js.bessel_jn(z, v=int(v))[int(v)]
+             else:
+                 # J_{-n}(z) = (-1)^n J_n(z)
+                 return ((-1)**int(-v)) * js.bessel_jn(z, v=int(-v))[int(-v)]
+        raise NotImplementedError('jv with real order not natively supported in JAX. Use an integer order.')
+    elif rp.use_torch:
+        class JV(tr.autograd.Function):
+            @staticmethod
+            def forward(ctx, v, z):
+                v_np   = v.detach().cpu().numpy()
+                z_np   = z.detach().cpu().numpy()
+                res_np = ss.jv(v_np, z_np)
+                ctx.save_for_backward(v, z)
+                return tr.as_tensor(res_np, dtype=z.dtype, device=z.device)
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                v, z = ctx.saved_tensors
+                v_np = v.detach().cpu().numpy()
+                z_np = z.detach().cpu().numpy()
+                dj_dz_np = 0.5 * (ss.jv(v_np - 1, z_np) - ss.jv(v_np + 1, z_np))
+                grad_z = grad_output * tr.as_tensor(dj_dz_np, dtype=z.dtype, device=z.device)
+                
+                # Handle broadcasting for grad_z
+                while grad_z.ndim > z.ndim:
+                    grad_z = grad_z.sum(0)
+                for i, dim in enumerate(z.shape):
+                    if dim == 1:
+                        grad_z = grad_z.sum(i, keepdim=True)
+                
+                return None, grad_z
+
+        return rp.TorchArray(JV.apply(tr.as_tensor(v), tr.as_tensor(z)))
+    else: return ss.jv(v, z)
 
 def log_ndtr(x):
     if rp.use_jax: return js.log_ndtr(x)

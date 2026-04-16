@@ -265,6 +265,15 @@ if tr is not None:
             q_vec = q[..., :3]
             q_w = q[..., 3:4]
             
+            # Fix for PyTorch linalg.cross dimension mismatch (requires same ndim)
+            if v.ndim > q.ndim:
+                for _ in range(v.ndim - q.ndim):
+                    q_vec = q_vec.unsqueeze(-2)
+                    q_w = q_w.unsqueeze(-2)
+            elif q.ndim > v.ndim:
+                for _ in range(q.ndim - v.ndim):
+                    v = v.unsqueeze(-2)
+                
             a = tr.cross(q_vec, v, dim=-1)
             b = tr.cross(q_vec, a + q_w * v, dim=-1)
             return v + 2.0 * b
