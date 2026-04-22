@@ -833,6 +833,207 @@ def fminbound(func, x1, x2, args=(), xtol=1e-05, maxfun=500, full_output=0, disp
     else:
         return so.fminbound(func, x1, x2, args=args, xtol=xtol, maxfun=maxfun, full_output=full_output, disp=disp)
 
+def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49012e-08, maxfev=0, band=None, epsfcn=None, factor=100, diag=None):
+    if rp.use_jax:
+        import jax
+        import jax.numpy as jnp
+        
+        args_flat, args_tree = jax.tree_util.tree_flatten(args)
+        
+        @jax.custom_jvp
+        def _jax_fsolve(x0_in, *a_flat):
+            current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
+            def fun_np(x_v): 
+                 res = func(rp.array(x_v), *current_args)
+                 return np.asarray(jax.device_get(res))
+            
+            fprime_to_use = None
+            if fprime is not None:
+                def fprime_np(x_v):
+                    res = fprime(rp.array(x_v), *current_args)
+                    return np.asarray(jax.device_get(res))
+                fprime_to_use = fprime_np
+            else:
+                def fprime_autograd_np(x_v):
+                    jac_fn = jax.jacobian(lambda x: func(rp.array(x), *current_args).ravel())
+                    res = jac_fn(jnp.array(x_v))
+                    return np.asarray(jax.device_get(res))
+                fprime_to_use = fprime_autograd_np
+            
+            res = so.fsolve(fun_np, np.asarray(x0_in), args=(), fprime=fprime_to_use, full_output=True, 
+                            col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band, 
+                            epsfcn=epsfcn, factor=factor, diag=diag)
+            x_sol, infodict, ier, mesg = res
+            return jnp.array(x_sol)
+
+        @_jax_fsolve.defjvp
+        def _jax_fsolve_jvp(primals, tangents):
+            params_p = primals[1:]
+            params_t = tangents[1:]
+            x_sol = _jax_fsolve(*primals)
+            
+            def objective(x_v, *p_v):
+                current_args = jax.tree_util.tree_unflatten(args_tree, p_v)
+                return func(rp.array(x_v), *current_args).ravel()
+
+            Jx = jax.jacobian(objective, argnums=0)(x_sol, *params_p)
+            _ , f_p_tangent = jax.jvp(lambda *p: objective(x_sol, *p), params_p, params_t)
+            
+            dx = -jnp.linalg.solve(Jx, f_p_tangent)
+            return x_sol, dx
+
+        x_sol = _jax_fsolve(x0, *args_flat)
+        
+        if full_output:
+            def get_metadata():
+                def fun_np_meta(x_v):
+                    res_v = func(rp.array(x_v), *jax.tree_util.tree_map(jax.lax.stop_gradient, args))
+                    return np.asarray(jax.device_get(res_v))
+                
+                fprime_to_use_meta = None
+                if fprime is not None:
+                    def fprime_np_meta(x_v):
+                        res_v = fprime(rp.array(x_v), *jax.tree_util.tree_map(jax.lax.stop_gradient, args))
+                        return np.asarray(jax.device_get(res_v))
+                    fprime_to_use_meta = fprime_np_meta
+                else:
+                    def fprime_autograd_np_meta(x_v):
+                        jac_fn = jax.jacobian(lambda x: func(rp.array(x), *jax.tree_util.tree_map(jax.lax.stop_gradient, args)).ravel())
+                        res = jac_fn(jnp.array(x_v))
+                        return np.asarray(jax.device_get(res))
+                    fprime_to_use_meta = fprime_autograd_np_meta
+
+                return so.fsolve(fun_np_meta, np.asarray(x0), args=(), fprime=fprime_to_use_meta, full_output=True, 
+                                 col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band, 
+                                 epsfcn=epsfcn, factor=factor, diag=diag)
+            
+            try:
+                xs, infodict, ier, mesg = get_metadata()
+                return rp.array(x_sol), _convert_optimize_result(infodict), ier, mesg
+            except Exception:
+                return rp.array(x_sol), {}, 1, "Success"
+        else:
+            return rp.array(x_sol)
+
+    elif rp.use_torch:
+        import torch as tr
+        
+        params = _find_tensors(args)
+        dt = x0.dtype if hasattr(x0, 'dtype') else (params[0].dtype if params else tr.get_default_dtype())
+
+        class FSolve(tr.autograd.Function):
+            @staticmethod
+            def forward(ctx, x0_in, *params_in):
+                def fun_np(x_val):
+                    current_args = _replace_tensors(args, params_in, {'idx': 0})
+                    res = func(rp.array(x_val, dtype=dt), *current_args)
+                    return tr.as_tensor(res).detach().cpu().numpy()
+
+                fprime_to_use = None
+                if fprime is not None:
+                    def fprime_np(x_val):
+                        current_args = _replace_tensors(args, params_in, {'idx': 0})
+                        res = fprime(rp.array(x_val, dtype=dt), *current_args)
+                        return tr.as_tensor(res).detach().cpu().numpy()
+                    fprime_to_use = fprime_np
+                else:
+                    def fprime_autograd_np(x_val):
+                        current_args = _replace_tensors(args, params_in, {'idx': 0})
+                        x_tr = tr.as_tensor(x_val, dtype=dt)
+                        def f_tr(x_v):
+                            return tr.as_tensor(func(rp.array(x_v, dtype=dt), *current_args)).ravel()
+                        jac = tr.autograd.functional.jacobian(f_tr, x_tr)
+                        return jac.detach().cpu().numpy()
+                    fprime_to_use = fprime_autograd_np
+
+                res = so.fsolve(fun_np, tr.as_tensor(x0_in).detach().cpu().numpy(), args=(), fprime=fprime_to_use, 
+                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, 
+                                 band=band, epsfcn=epsfcn, factor=factor, diag=diag)
+                x_sol_np, infodict, ier, mesg = res
+                x_sol = tr.as_tensor(x_sol_np, dtype=dt)
+                ctx.save_for_backward(x_sol, *params_in)
+                return x_sol
+
+            @staticmethod
+            def backward(ctx, grad_x):
+                x_sol = ctx.saved_tensors[0]
+                params_in = ctx.saved_tensors[1:]
+                
+                with tr.enable_grad():
+                    x = x_sol.detach().requires_grad_(True)
+                    current_args = _replace_tensors(args, params_in, {'idx': 0})
+                    f_val = func(rp.array(x, dtype=dt), *current_args)
+                    f_tensor = tr.as_tensor(f_val).ravel()
+                
+                def f_wrapper(x_v):
+                    return tr.as_tensor(func(rp.array(x_v, dtype=dt), *current_args)).ravel()
+                
+                Jx = tr.autograd.functional.jacobian(f_wrapper, x)
+                
+                try:
+                    lambd = tr.linalg.solve(Jx.T, grad_x.reshape(-1, 1)).reshape(-1)
+                except:
+                    lambd = tr.linalg.lstsq(Jx.T, grad_x.reshape(-1, 1)).solution.reshape(-1)
+                
+                grad_params = [None] * len(params_in)
+                params_to_diff = []
+                params_indices = []
+                for i, p in enumerate(params_in):
+                    if p.requires_grad:
+                        params_to_diff.append(p)
+                        params_indices.append(i)
+                
+                if params_to_diff:
+                    vjp_params = tr.autograd.grad(f_tensor, params_to_diff, grad_outputs=-lambd, allow_unused=True)
+                    for i, g in zip(params_indices, vjp_params):
+                        grad_params[i] = g
+                
+                return (None, *grad_params)
+
+        params = _find_tensors(args)
+        x_sol = FSolve.apply(x0, *params)
+        
+        if full_output:
+            def get_metadata():
+                def fun_np_meta(x_val):
+                    res = func(rp.array(x_val, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
+                    return tr.as_tensor(res).detach().cpu().numpy()
+                
+                fprime_to_use_meta = None
+                if fprime is not None:
+                    def fprime_np_meta(x_val):
+                        res = fprime(rp.array(x_val, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
+                        return tr.as_tensor(res).detach().cpu().numpy()
+                    fprime_to_use_meta = fprime_np_meta
+                else:
+                    def fprime_autograd_np_meta(x_val):
+                        m_args = _replace_tensors(args, params, {'idx': 0})
+                        x_tr = tr.as_tensor(x_val, dtype=dt)
+                        def f_tr(x_v):
+                            return tr.as_tensor(func(rp.array(x_v, dtype=dt), *m_args)).ravel()
+                        jac = tr.autograd.functional.jacobian(f_tr, x_tr)
+                        return jac.detach().cpu().numpy()
+                    fprime_to_use_meta = fprime_autograd_np_meta
+
+                return so.fsolve(fun_np_meta, tr.as_tensor(x0).detach().cpu().numpy(), args=(), fprime=fprime_to_use_meta, 
+                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, 
+                                 band=band, epsfcn=epsfcn, factor=factor, diag=diag)
+            
+            xs, infodict, ier, mesg = get_metadata()
+            return rp.array(x_sol, dtype=dt), _convert_optimize_result(infodict), ier, mesg
+        else:
+            return rp.array(x_sol, dtype=dt)
+    
+    else:
+        res = so.fsolve(func, x0, args=args, fprime=fprime, full_output=full_output, 
+                         col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band, 
+                         epsfcn=epsfcn, factor=factor, diag=diag)
+        if full_output:
+            x, infodict, ier, mesg = res
+            return rp.array(x), _convert_optimize_result(infodict), ier, mesg
+        else:
+            return rp.array(res)
+
 def root(fun, x0, args=(), method='hybr', jac=None, tol=None, callback=None, options=None):
     if rp.use_jax:
         import jax

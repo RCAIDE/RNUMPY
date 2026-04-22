@@ -76,3 +76,41 @@ def normal(key, shape=(), dtype=float):
         rng = np.random.default_rng(key)
         res = rng.standard_normal(size=shape)
         return rp.NumpyArray(res)
+
+def choice(key, a, shape=(), replace=True, p=None, axis=0):
+    """Randomly chooses elements from an array."""
+    if rp.use_jax and j:
+        return j.random.choice(key, a, shape, replace, p, axis)
+    elif rp.use_torch and tr:
+        if isinstance(a, int):
+            size = a
+            arr = tr.arange(size)
+            axis = 0 
+        else:
+            arr = tr.as_tensor(a)
+            size = arr.shape[axis]
+            
+        num_samples = int(np.prod(shape))
+        
+        if p is None:
+            probs = tr.ones(size)
+        else:
+            probs = tr.as_tensor(p)
+            
+        g = tr.Generator()
+        g.manual_seed(key)
+        
+        indices = tr.multinomial(probs, num_samples, replacement=replace, generator=g)
+        
+        res = tr.index_select(arr, axis, indices)
+        
+        final_shape = arr.shape[:axis] + tuple(shape) + arr.shape[axis+1:]
+        res = res.reshape(final_shape)
+        
+        return rp.TorchArray(res)
+    else:
+        rng = np.random.default_rng(key)
+        # Handle int a for np.random.default_rng().choice if necessary 
+        # (Actually rng.choice accepts int)
+        res = rng.choice(a, size=shape, replace=replace, p=p, axis=axis)
+        return rp.NumpyArray(res)
