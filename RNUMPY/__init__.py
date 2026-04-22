@@ -11,6 +11,7 @@
 import numpy as np
 import builtins
 import warnings
+import inspect
 
 # Set the handles to None initially to allow submodules to import RNUMPY
 jax_handle   = None
@@ -45,6 +46,7 @@ except ImportError:
 # Set the default environment
 use_jax      = False
 use_torch    = False
+ensure_differentiable = True
 
 # Set pi
 pi = 3.141592653589793
@@ -106,6 +108,26 @@ def __dir__():
 
 from ._basearrays import _set_array_base_attributes
 
+def _get_obj_name(obj):
+    try:
+        frame = inspect.currentframe()
+        while frame:
+            if frame.f_code.co_name in ('__setitem__', '_inplace_error', '_get_obj_name', '<lambda>') or \
+               frame.f_code.co_filename.endswith('RNUMPY/__init__.py'):
+                frame = frame.f_back
+                continue
+            
+            for name, val in frame.f_locals.items():
+                if val is obj and name != 'self':
+                    return name
+            for name, val in frame.f_globals.items():
+                if val is obj:
+                    return name
+            frame = frame.f_back
+    except:
+        pass
+    return "x"
+
 class Array():
     pass
 
@@ -117,6 +139,65 @@ class NumpyArray(Array,np.ndarray):
         # Convert input_array to an instance of MyArray
         obj = np.asarray(input_array).view(cls)
         return obj
+
+    def __setitem__(self, key, value):
+        if not ensure_differentiable:
+            return super().__setitem__(key, value)
+        name = _get_obj_name(self)
+        
+        # Detect if key is likely a boolean mask
+        is_bool = False
+        if isinstance(key, (bool, np.bool_)):
+            is_bool = True
+        elif isinstance(key, np.ndarray) and key.dtype == np.bool_:
+            is_bool = True
+        elif torch_handle is not None and isinstance(key, torch_handle.Tensor) and key.dtype == torch_handle.bool:
+            is_bool = True
+        elif isinstance(key, list) and len(key) > 0 and isinstance(key[0], bool):
+            is_bool = True
+
+        if is_bool:
+             key_name = _get_obj_name(key)
+             if key_name == "x": key_name = str(key)
+             raise TypeError(
+                f"RNUMPY: Inplace assignment {name}[{key_name}] = value with a boolean mask is not allowed in differentiable code. "
+                f"Please use {name} = rp.where({key_name}, value, {name}) instead."
+            )
+        else:
+            raise TypeError(
+                f"RNUMPY: Inplace assignment {name}[{key}] = value is not allowed in differentiable code. "
+                f"Please use {name} = {name}.at[{key}].set(value) instead."
+            )
+
+    def __iadd__(self, other):
+        if not ensure_differentiable: return super().__iadd__(other)
+        name = _get_obj_name(self)
+        raise TypeError(f"RNUMPY: Inplace operator {name} += value is not allowed in differentiable code. "
+                        f"Please use {name} = {name} + value or {name}.at[...].add(value) instead.")
+
+    def __isub__(self, other):
+        if not ensure_differentiable: return super().__isub__(other)
+        name = _get_obj_name(self)
+        raise TypeError(f"RNUMPY: Inplace operator {name} -= value is not allowed in differentiable code. "
+                        f"Please use {name} = {name} - value or {name}.at[...].subtract(value) instead.")
+
+    def __imul__(self, other):
+        if not ensure_differentiable: return super().__imul__(other)
+        name = _get_obj_name(self)
+        raise TypeError(f"RNUMPY: Inplace operator {name} *= value is not allowed in differentiable code. "
+                        f"Please use {name} = {name} * value or {name}.at[...].multiply(value) instead.")
+
+    def __itruediv__(self, other):
+        if not ensure_differentiable: return super().__itruediv__(other)
+        name = _get_obj_name(self)
+        raise TypeError(f"RNUMPY: Inplace operator {name} /= value is not allowed in differentiable code. "
+                        f"Please use {name} = {name} / value or {name}.at[...].divide(value) instead.")
+
+    def __ipow__(self, other):
+        if not ensure_differentiable: return super().__ipow__(other)
+        name = _get_obj_name(self)
+        raise TypeError(f"RNUMPY: Inplace operator {name} **= value is not allowed in differentiable code. "
+                        f"Please use {name} = {name} ** value or {name}.at[...].power(value) instead.")
 
 if torch is not None:
     class TorchArray(Array, ttensor):
@@ -163,6 +244,65 @@ if torch is not None:
             if isinstance(res, ttensor) and not isinstance(res, TorchArray):
                 return res.as_subclass(TorchArray)
             return res
+
+        def __setitem__(self, key, value):
+            if not ensure_differentiable:
+                return super().__setitem__(key, value)
+            name = _get_obj_name(self)
+            
+            # Detect if key is likely a boolean mask
+            is_bool = False
+            if isinstance(key, (bool, np.bool_)):
+                is_bool = True
+            elif isinstance(key, np.ndarray) and key.dtype == np.bool_:
+                is_bool = True
+            elif torch_handle is not None and isinstance(key, torch_handle.Tensor) and key.dtype == torch_handle.bool:
+                is_bool = True
+            elif isinstance(key, list) and len(key) > 0 and isinstance(key[0], bool):
+                is_bool = True
+
+            if is_bool:
+                 key_name = _get_obj_name(key)
+                 if key_name == "x": key_name = str(key)
+                 raise TypeError(
+                    f"RNUMPY: Inplace assignment {name}[{key_name}] = value with a boolean mask is not allowed in differentiable code. "
+                    f"Please use {name} = rp.where({key_name}, value, {name}) instead."
+                )
+            else:
+                raise TypeError(
+                    f"RNUMPY: Inplace assignment {name}[{key}] = value is not allowed in differentiable code. "
+                    f"Please use {name} = {name}.at[{key}].set(value) instead."
+                )
+
+        def __iadd__(self, other):
+            if not ensure_differentiable: return super().__iadd__(other)
+            name = _get_obj_name(self)
+            raise TypeError(f"RNUMPY: Inplace operator {name} += value is not allowed in differentiable code. "
+                            f"Please use {name} = {name} + value or {name}.at[...].add(value) instead.")
+
+        def __isub__(self, other):
+            if not ensure_differentiable: return super().__isub__(other)
+            name = _get_obj_name(self)
+            raise TypeError(f"RNUMPY: Inplace operator {name} -= value is not allowed in differentiable code. "
+                            f"Please use {name} = {name} - value or {name}.at[...].subtract(value) instead.")
+
+        def __imul__(self, other):
+            if not ensure_differentiable: return super().__imul__(other)
+            name = _get_obj_name(self)
+            raise TypeError(f"RNUMPY: Inplace operator {name} *= value is not allowed in differentiable code. "
+                            f"Please use {name} = {name} * value or {name}.at[...].multiply(value) instead.")
+
+        def __itruediv__(self, other):
+            if not ensure_differentiable: return super().__itruediv__(other)
+            name = _get_obj_name(self)
+            raise TypeError(f"RNUMPY: Inplace operator {name} /= value is not allowed in differentiable code. "
+                            f"Please use {name} = {name} / value or {name}.at[...].divide(value) instead.")
+
+        def __ipow__(self, other):
+            if not ensure_differentiable: return super().__ipow__(other)
+            name = _get_obj_name(self)
+            raise TypeError(f"RNUMPY: Inplace operator {name} **= value is not allowed in differentiable code. "
+                            f"Please use {name} = {name} ** value or {name}.at[...].power(value) instead.")
 
         def __deepcopy__(self, memo):
             return TorchArray(self.clone())
