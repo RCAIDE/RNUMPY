@@ -2201,10 +2201,26 @@ def logical_xor(x1, x2, /):
         return NumpyArray(np.logical_xor(x1, x2))
 
 
-def allclose(): raise NotImplementedError
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    if rp.use_jax:
+        return jnp.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+    elif rp.use_torch:
+        a_t = tr.as_tensor(a)
+        b_t = tr.as_tensor(b)
+        return tr.allclose(a_t, b_t, rtol=rtol, atol=atol, equal_nan=equal_nan)
+    else:
+        return np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
 
-def isclose(): raise NotImplementedError
+def isclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    if rp.use_jax:
+        return jnp.isclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+    elif rp.use_torch:
+        a_t = tr.as_tensor(a)
+        b_t = tr.as_tensor(b)
+        return TorchArray(tr.isclose(a_t, b_t, rtol=rtol, atol=atol, equal_nan=equal_nan))
+    else:
+        return NumpyArray(np.isclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan))
 
 
 def array_equal(): raise NotImplementedError

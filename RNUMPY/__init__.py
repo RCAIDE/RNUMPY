@@ -294,5 +294,6 @@ from .linalg import *
 from .lax import *
 from .autograd import *
 from . import scipy
+from . import random
 
 
