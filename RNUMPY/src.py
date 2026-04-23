@@ -2117,7 +2117,13 @@ def any(a, axis=None, out=None, keepdims=False, *, where=None):
         return NumpyArray(np.any(a, axis=axis, out=out, keepdims=keepdims, **kwargs))
 
 
-def isfinite(): raise NotImplementedError
+def isfinite(x, /):
+    if rp.use_jax:
+        return jnp.isfinite(x)
+    elif rp.use_torch:
+        return TorchArray(tr.isfinite(tr.as_tensor(x)))
+    else:
+        return NumpyArray(np.isfinite(x))
 
 
 def isinf(x, /):

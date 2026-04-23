@@ -12,6 +12,7 @@ import numpy as np
 import builtins
 import warnings
 import inspect
+import ast
 
 # Set the handles to None initially to allow submodules to import RNUMPY
 jax_handle   = None
@@ -109,10 +110,12 @@ def __dir__():
 from ._basearrays import _set_array_base_attributes
 
 def _get_obj_name(obj):
+    if isinstance(obj, (int, float, str, bool, type(None))):
+        return "x"
     try:
         frame = inspect.currentframe()
         while frame:
-            if frame.f_code.co_name in ('__setitem__', '_inplace_error', '_get_obj_name', '<lambda>') or \
+            if frame.f_code.co_name in ('__setitem__', '_inplace_error', '_get_obj_name', '_format_val', '<lambda>') or \
                frame.f_code.co_filename.endswith('RNUMPY/__init__.py'):
                 frame = frame.f_back
                 continue
@@ -128,6 +131,148 @@ def _get_obj_name(obj):
         pass
     return "x"
 
+def _format_val(val):
+    if isinstance(val, tuple):
+        return "(" + ", ".join(_format_val(v) for v in val) + ")"
+    
+    name = _get_obj_name(val)
+    if name != "x":
+        return name
+    
+    # Special handling for slice
+    if isinstance(val, slice):
+        start = "" if val.start is None else str(val.start)
+        stop = "" if val.stop is None else str(val.stop)
+        step = "" if val.step is None else str(val.step)
+        if val.step is None:
+             return f"{start}:{stop}"
+        return f"{start}:{stop}:{step}"
+
+    s = str(val)
+    if len(s) > 40:
+        return s[:37] + "..."
+    return s
+
+class _RemoveMatchingSubscript(ast.NodeTransformer):
+    def __init__(self, match_slice_str):
+        self.match_slice_str = match_slice_str
+    
+    def visit_Subscript(self, node):
+        self.generic_visit(node)
+        try:
+            if ast.unparse(node.slice) == self.match_slice_str:
+                return node.value
+        except:
+            pass
+        return node
+
+def _get_source_exprs():
+    try:
+        frame = inspect.currentframe().f_back
+        # Go back until we hit the user code
+        while frame:
+            if frame.f_code.co_name not in ('__setitem__', '__iadd__', '__isub__', '__imul__', '__itruediv__', '__ipow__', '_inplace_error', '_get_obj_name', '_format_val', '_get_source_exprs', '<lambda>') and \
+               not frame.f_code.co_filename.endswith('RNUMPY/__init__.py'):
+                break
+            frame = frame.f_back
+            
+        if not frame:
+            return None, None, None, None
+            
+        filename = frame.f_code.co_filename
+        lineno = frame.f_lineno
+        
+        with open(filename, "r") as f:
+            source = f.read()
+        
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AugAssign)):
+                if hasattr(node, "lineno") and hasattr(node, "end_lineno"):
+                    if node.lineno <= lineno <= node.end_lineno:
+                        if isinstance(node, ast.Assign):
+                            target = node.targets[0]
+                            if isinstance(target, ast.Subscript):
+                                slice_node = target.slice
+                                key_expr_str_with_parens = ast.unparse(slice_node)
+                                if isinstance(slice_node, ast.Tuple):
+                                    key_expr_str_no_parens = ", ".join(ast.unparse(e) for e in slice_node.elts)
+                                else:
+                                    key_expr_str_no_parens = key_expr_str_with_parens
+                                
+                                val_node = node.value
+                                original_val_str = ast.unparse(val_node)
+                                
+                                transformer = _RemoveMatchingSubscript(key_expr_str_with_parens)
+                                transformed_val_node = transformer.visit(val_node)
+                                
+                                return key_expr_str_no_parens, key_expr_str_with_parens, original_val_str, ast.unparse(transformed_val_node)
+                        elif isinstance(node, ast.AugAssign):
+                            target = node.target
+                            if isinstance(target, ast.Subscript):
+                                slice_node = target.slice
+                                key_expr_str_with_parens = ast.unparse(slice_node)
+                                if isinstance(slice_node, ast.Tuple):
+                                    key_expr_str_no_parens = ", ".join(ast.unparse(e) for e in slice_node.elts)
+                                else:
+                                    key_expr_str_no_parens = key_expr_str_with_parens
+                                
+                                val_node = node.value
+                                original_val_str = ast.unparse(val_node)
+                                
+                                transformer = _RemoveMatchingSubscript(key_expr_str_with_parens)
+                                transformed_val_node = transformer.visit(val_node)
+                                return key_expr_str_no_parens, key_expr_str_with_parens, original_val_str, ast.unparse(transformed_val_node)
+                            return None, None, None, ast.unparse(node.value)
+    except:
+        pass
+    return None, None, None, None
+
+def _is_boolean_mask(obj):
+    if type(obj) is bool:
+        return True
+    if hasattr(obj, 'dtype'):
+        try:
+            if obj.dtype in (bool, np.bool_):
+                return True
+            if torch_handle is not None and obj.dtype == torch_handle.bool:
+                return True
+        except:
+            pass
+    if isinstance(obj, list) and len(obj) > 0 and type(obj[0]) is bool:
+        return True
+    return False
+
+def _contains_boolean_mask(obj):
+    if _is_boolean_mask(obj):
+        return True
+    if isinstance(obj, tuple):
+        return any(_contains_boolean_mask(i) for i in obj)
+    return False
+
+def _is_library_call():
+    try:
+        frame = inspect.currentframe().f_back
+        while frame:
+            filename = frame.f_code.co_filename
+            if frame.f_code.co_name in ('__setitem__', '__iadd__', '__isub__', '__imul__', '__itruediv__', '__ipow__') or \
+               filename.endswith('RNUMPY/__init__.py') or filename.endswith('RNUMPY/_basearrays.py'):
+                frame = frame.f_back
+                continue
+            
+            if 'site-packages' in filename or \
+               'dist-packages' in filename or \
+               'lib/python' in filename or \
+               '/numpy/' in filename or \
+               '/scipy/' in filename or \
+               '/torch/' in filename or \
+               '/jax/' in filename:
+                return True
+            return False
+    except:
+        pass
+    return False
+
 class Array():
     pass
 
@@ -141,63 +286,76 @@ class NumpyArray(Array,np.ndarray):
         return obj
 
     def __setitem__(self, key, value):
-        if not ensure_differentiable:
+        if not ensure_differentiable or _is_library_call():
             return super().__setitem__(key, value)
-        name = _get_obj_name(self)
         
-        # Detect if key is likely a boolean mask
-        is_bool = False
-        if isinstance(key, (bool, np.bool_)):
-            is_bool = True
-        elif isinstance(key, np.ndarray) and key.dtype == np.bool_:
-            is_bool = True
-        elif torch_handle is not None and isinstance(key, torch_handle.Tensor) and key.dtype == torch_handle.bool:
-            is_bool = True
-        elif isinstance(key, list) and len(key) > 0 and isinstance(key[0], bool):
-            is_bool = True
+        source_key_np, source_key_wp, orig_val_str, trans_val_str = _get_source_exprs()
+        
+        name = _get_obj_name(self)
+        val_name_desc = orig_val_str if orig_val_str else _format_val(value)
+        val_name_sugg = trans_val_str if trans_val_str else val_name_desc
+        
+        key_name_desc = source_key_np if source_key_np else _format_val(key)
+        if not source_key_wp:
+            key_name_wp = f"({_format_val(key)})" if isinstance(key, tuple) else _format_val(key)
+        else:
+            key_name_wp = source_key_wp
+        
+        is_simple_bool = _is_boolean_mask(key)
+        is_any_bool = is_simple_bool or _contains_boolean_mask(key)
 
-        if is_bool:
-             key_name = _get_obj_name(key)
-             if key_name == "x": key_name = str(key)
+        if is_simple_bool:
              raise TypeError(
-                f"RNUMPY: Inplace assignment {name}[{key_name}] = value with a boolean mask is not allowed in differentiable code. "
-                f"Please use {name} = rp.where({key_name}, value, {name}) instead."
+                f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} with a boolean mask is not allowed in differentiable code. "
+                f"Please use \n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
             )
         else:
-            raise TypeError(
-                f"RNUMPY: Inplace assignment {name}[{key}] = value is not allowed in differentiable code. "
-                f"Please use {name} = {name}.at[{key}].set(value) instead."
-            )
+             msg = f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} is not allowed in differentiable code. "
+             if is_any_bool:
+                  msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\nor\n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
+             else:
+                  msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\ninstead."
+             raise TypeError(msg)
 
     def __iadd__(self, other):
-        if not ensure_differentiable: return super().__iadd__(other)
+        if not ensure_differentiable or _is_library_call(): return super().__iadd__(other)
+        _, _, _, source_val = _get_source_exprs()
         name = _get_obj_name(self)
-        raise TypeError(f"RNUMPY: Inplace operator {name} += value is not allowed in differentiable code. "
-                        f"Please use {name} = {name} + value or {name}.at[...].add(value) instead.")
+        val_name = source_val if source_val else _format_val(other)
+        raise TypeError(f"RNUMPY: Inplace operator {name} += {val_name} is not allowed in differentiable code. "
+                        f"Please use {name} = {name} + {val_name} or {name}.at[...].add({val_name}) instead.")
 
     def __isub__(self, other):
-        if not ensure_differentiable: return super().__isub__(other)
+        if not ensure_differentiable or _is_library_call(): return super().__isub__(other)
+        _, _, _, source_val = _get_source_exprs()
         name = _get_obj_name(self)
-        raise TypeError(f"RNUMPY: Inplace operator {name} -= value is not allowed in differentiable code. "
-                        f"Please use {name} = {name} - value or {name}.at[...].subtract(value) instead.")
+        val_name = source_val if source_val else _format_val(other)
+        raise TypeError(f"RNUMPY: Inplace operator {name} -= {val_name} is not allowed in differentiable code. "
+                        f"Please use {name} = {name} - {val_name} or {name}.at[...].subtract({val_name}) instead.")
 
     def __imul__(self, other):
-        if not ensure_differentiable: return super().__imul__(other)
+        if not ensure_differentiable or _is_library_call(): return super().__imul__(other)
+        _, _, _, source_val = _get_source_exprs()
         name = _get_obj_name(self)
-        raise TypeError(f"RNUMPY: Inplace operator {name} *= value is not allowed in differentiable code. "
-                        f"Please use {name} = {name} * value or {name}.at[...].multiply(value) instead.")
+        val_name = source_val if source_val else _format_val(other)
+        raise TypeError(f"RNUMPY: Inplace operator {name} *= {val_name} is not allowed in differentiable code. "
+                        f"Please use {name} = {name} * {val_name} or {name}.at[...].multiply({val_name}) instead.")
 
     def __itruediv__(self, other):
-        if not ensure_differentiable: return super().__itruediv__(other)
+        if not ensure_differentiable or _is_library_call(): return super().__itruediv__(other)
+        _, _, _, source_val = _get_source_exprs()
         name = _get_obj_name(self)
-        raise TypeError(f"RNUMPY: Inplace operator {name} /= value is not allowed in differentiable code. "
-                        f"Please use {name} = {name} / value or {name}.at[...].divide(value) instead.")
+        val_name = source_val if source_val else _format_val(other)
+        raise TypeError(f"RNUMPY: Inplace operator {name} /= {val_name} is not allowed in differentiable code. "
+                        f"Please use {name} = {name} / {val_name} or {name}.at[...].divide({val_name}) instead.")
 
     def __ipow__(self, other):
-        if not ensure_differentiable: return super().__ipow__(other)
+        if not ensure_differentiable or _is_library_call(): return super().__ipow__(other)
+        _, _, _, source_val = _get_source_exprs()
         name = _get_obj_name(self)
-        raise TypeError(f"RNUMPY: Inplace operator {name} **= value is not allowed in differentiable code. "
-                        f"Please use {name} = {name} ** value or {name}.at[...].power(value) instead.")
+        val_name = source_val if source_val else _format_val(other)
+        raise TypeError(f"RNUMPY: Inplace operator {name} **= {val_name} is not allowed in differentiable code. "
+                        f"Please use {name} = {name} ** {val_name} or {name}.at[...].power({val_name}) instead.")
 
 if torch is not None:
     class TorchArray(Array, ttensor):
@@ -246,63 +404,76 @@ if torch is not None:
             return res
 
         def __setitem__(self, key, value):
-            if not ensure_differentiable:
+            if not ensure_differentiable or _is_library_call():
                 return super().__setitem__(key, value)
-            name = _get_obj_name(self)
             
-            # Detect if key is likely a boolean mask
-            is_bool = False
-            if isinstance(key, (bool, np.bool_)):
-                is_bool = True
-            elif isinstance(key, np.ndarray) and key.dtype == np.bool_:
-                is_bool = True
-            elif torch_handle is not None and isinstance(key, torch_handle.Tensor) and key.dtype == torch_handle.bool:
-                is_bool = True
-            elif isinstance(key, list) and len(key) > 0 and isinstance(key[0], bool):
-                is_bool = True
+            source_key_np, source_key_wp, orig_val_str, trans_val_str = _get_source_exprs()
+            
+            name = _get_obj_name(self)
+            val_name_desc = orig_val_str if orig_val_str else _format_val(value)
+            val_name_sugg = trans_val_str if trans_val_str else val_name_desc
+            
+            key_name_desc = source_key_np if source_key_np else _format_val(key)
+            if not source_key_wp:
+                key_name_wp = f"({_format_val(key)})" if isinstance(key, tuple) else _format_val(key)
+            else:
+                key_name_wp = source_key_wp
+            
+            is_simple_bool = _is_boolean_mask(key)
+            is_any_bool = is_simple_bool or _contains_boolean_mask(key)
 
-            if is_bool:
-                 key_name = _get_obj_name(key)
-                 if key_name == "x": key_name = str(key)
+            if is_simple_bool:
                  raise TypeError(
-                    f"RNUMPY: Inplace assignment {name}[{key_name}] = value with a boolean mask is not allowed in differentiable code. "
-                    f"Please use {name} = rp.where({key_name}, value, {name}) instead."
+                    f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} with a boolean mask is not allowed in differentiable code. "
+                    f"Please use \n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
                 )
             else:
-                raise TypeError(
-                    f"RNUMPY: Inplace assignment {name}[{key}] = value is not allowed in differentiable code. "
-                    f"Please use {name} = {name}.at[{key}].set(value) instead."
-                )
+                 msg = f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} is not allowed in differentiable code. "
+                 if is_any_bool:
+                      msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\nor\n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
+                 else:
+                      msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\ninstead."
+                 raise TypeError(msg)
 
         def __iadd__(self, other):
-            if not ensure_differentiable: return super().__iadd__(other)
+            if not ensure_differentiable or _is_library_call(): return super().__iadd__(other)
+            _, _, _, source_val = _get_source_exprs()
             name = _get_obj_name(self)
-            raise TypeError(f"RNUMPY: Inplace operator {name} += value is not allowed in differentiable code. "
-                            f"Please use {name} = {name} + value or {name}.at[...].add(value) instead.")
+            val_name = source_val if source_val else _format_val(other)
+            raise TypeError(f"RNUMPY: Inplace operator {name} += {val_name} is not allowed in differentiable code. "
+                            f"Please use {name} = {name} + {val_name} or {name}.at[...].add({val_name}) instead.")
 
         def __isub__(self, other):
-            if not ensure_differentiable: return super().__isub__(other)
+            if not ensure_differentiable or _is_library_call(): return super().__isub__(other)
+            _, _, _, source_val = _get_source_exprs()
             name = _get_obj_name(self)
-            raise TypeError(f"RNUMPY: Inplace operator {name} -= value is not allowed in differentiable code. "
-                            f"Please use {name} = {name} - value or {name}.at[...].subtract(value) instead.")
+            val_name = source_val if source_val else _format_val(other)
+            raise TypeError(f"RNUMPY: Inplace operator {name} -= {val_name} is not allowed in differentiable code. "
+                            f"Please use {name} = {name} - {val_name} or {name}.at[...].subtract({val_name}) instead.")
 
         def __imul__(self, other):
-            if not ensure_differentiable: return super().__imul__(other)
+            if not ensure_differentiable or _is_library_call(): return super().__imul__(other)
+            _, _, _, source_val = _get_source_exprs()
             name = _get_obj_name(self)
-            raise TypeError(f"RNUMPY: Inplace operator {name} *= value is not allowed in differentiable code. "
-                            f"Please use {name} = {name} * value or {name}.at[...].multiply(value) instead.")
+            val_name = source_val if source_val else _format_val(other)
+            raise TypeError(f"RNUMPY: Inplace operator {name} *= {val_name} is not allowed in differentiable code. "
+                            f"Please use {name} = {name} * {val_name} or {name}.at[...].multiply({val_name}) instead.")
 
         def __itruediv__(self, other):
-            if not ensure_differentiable: return super().__itruediv__(other)
+            if not ensure_differentiable or _is_library_call(): return super().__itruediv__(other)
+            _, _, _, source_val = _get_source_exprs()
             name = _get_obj_name(self)
-            raise TypeError(f"RNUMPY: Inplace operator {name} /= value is not allowed in differentiable code. "
-                            f"Please use {name} = {name} / value or {name}.at[...].divide(value) instead.")
+            val_name = source_val if source_val else _format_val(other)
+            raise TypeError(f"RNUMPY: Inplace operator {name} /= {val_name} is not allowed in differentiable code. "
+                            f"Please use {name} = {name} / {val_name} or {name}.at[...].divide({val_name}) instead.")
 
         def __ipow__(self, other):
-            if not ensure_differentiable: return super().__ipow__(other)
+            if not ensure_differentiable or _is_library_call(): return super().__ipow__(other)
+            _, _, _, source_val = _get_source_exprs()
             name = _get_obj_name(self)
-            raise TypeError(f"RNUMPY: Inplace operator {name} **= value is not allowed in differentiable code. "
-                            f"Please use {name} = {name} ** value or {name}.at[...].power(value) instead.")
+            val_name = source_val if source_val else _format_val(other)
+            raise TypeError(f"RNUMPY: Inplace operator {name} **= {val_name} is not allowed in differentiable code. "
+                            f"Please use {name} = {name} ** {val_name} or {name}.at[...].power({val_name}) instead.")
 
         def __deepcopy__(self, memo):
             return TorchArray(self.clone())
