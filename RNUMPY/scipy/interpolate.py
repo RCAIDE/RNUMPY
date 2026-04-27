@@ -28,11 +28,17 @@ TorchArray = rp.TorchArray
 
 def RegularGridInterpolator(points, values, method='linear', bounds_error=False, fill_value=np.nan): 
     if rp.use_jax: 
-        return ji.RegularGridInterpolator(points=points, values=values, method=method, bounds_error=bounds_error, fill_value=fill_value)
+        f = ji.RegularGridInterpolator(points=points, values=values, method=method, bounds_error=bounds_error, fill_value=fill_value)
+        def wrapped_ji_interp(xi):
+             return rp.array(f(xi))
+        return wrapped_ji_interp
     elif rp.use_torch:
         return _TorchRegularGridInterpolator(points=points, values=values, method=method, bounds_error=bounds_error, fill_value=fill_value)
     else:
-        return si.RegularGridInterpolator(points=points, values=values, method=method, bounds_error=bounds_error, fill_value=fill_value)
+        f = si.RegularGridInterpolator(points=points, values=values, method=method, bounds_error=bounds_error, fill_value=fill_value)
+        def wrapped_si_interp(xi):
+             return rp.array(f(xi))
+        return wrapped_si_interp
 
 def interp1d(x, y, kind='linear', axis=-1, copy=True, bounds_error=None, fill_value=np.nan, assume_sorted=False):
     if rp.use_jax:
@@ -181,8 +187,9 @@ def splprep(x, w=None, u=None, ub=None, ue=None, k=3, s=None, per=0, quiet=1):
                 c[:n] = c_inner
                 coeffs.append(c)
                 
-            tck = (t_knots, coeffs, k)
-            return tck, TorchArray(u_knots)
+                
+            tck = (rp.array(t_knots), [rp.array(c) for c in coeffs], k)
+            return tck, rp.array(u_knots)
             
         elif rp.use_jax:
             jnp = rp.jax_handle.numpy
@@ -212,7 +219,8 @@ def splprep(x, w=None, u=None, ub=None, ue=None, k=3, s=None, per=0, quiet=1):
                 c = c.at[:n].set(c_inner)
                 coeffs.append(c)
                 
-            tck = (t_knots, coeffs, k)
+                
+            tck = (rp.array(t_knots), [rp.array(c) for c in coeffs], k)
             return tck, rp.array(u_knots)
 
     if rp.use_jax or rp.use_torch:
@@ -220,7 +228,7 @@ def splprep(x, w=None, u=None, ub=None, ue=None, k=3, s=None, per=0, quiet=1):
          
     x_np = [np.array(arr) for arr in x]
     tck, u_out = si.splprep(x_np, w=w, u=u, ub=ub, ue=ue, k=k, s=s, per=per, quiet=quiet)
-    return ([rp.array(t) for t in tck[0]], rp.array(tck[1]), tck[2]), rp.array(u_out)
+    return (rp.array(tck[0]), [rp.array(c) for c in tck[1]], tck[2]), rp.array(u_out)
 
 def splev(x, tck, der=0, ext=0):
     if (rp.use_torch or rp.use_jax) and isinstance(tck, tuple) and len(tck) == 3 and der == 0:
@@ -254,7 +262,10 @@ def splev(x, tck, der=0, ext=0):
     if rp.use_jax or rp.use_torch:
          raise NotImplementedError("Differentiable splev only implemented for evaluation (der=0) for now.")
 
-    return si.splev(x, tck, der=der, ext=ext)
+    res = si.splev(x, tck, der=der, ext=ext)
+    if isinstance(res, list):
+         return [rp.array(r) for r in res]
+    return rp.array(res)
 
 def splrep(x, y, w=None, xb=None, xe=None, k=3, s=None, t=None, task=0, full_output=0, per=0, quiet=1):
     if (rp.use_torch or rp.use_jax) and (s == 0 or s is None):
@@ -276,7 +287,7 @@ def splrep(x, y, w=None, xb=None, xe=None, k=3, s=None, t=None, task=0, full_out
             c = tr.zeros(len(t_knots), dtype=c_inner.dtype, device=c_inner.device)
             c[:n] = c_inner
             
-            tck = (t_knots, c, k)
+            tck = (rp.array(t_knots), rp.array(c), k)
             return tck
             
         elif rp.use_jax:
@@ -298,13 +309,19 @@ def splrep(x, y, w=None, xb=None, xe=None, k=3, s=None, t=None, task=0, full_out
             c = jnp.zeros(len(t_knots), dtype=c_inner.dtype)
             c = c.at[:n].set(c_inner)
             
-            tck = (t_knots, c, k)
+            tck = (rp.array(t_knots), rp.array(c), k)
             return tck
     
     if rp.use_jax or rp.use_torch:
          raise NotImplementedError("Differentiable splrep only implemented for interpolation (s=0) for now.")
 
-    return si.splrep(x, y, w=w, xb=xb, xe=xe, k=k, s=s, t=t, task=task, full_output=full_output, per=per, quiet=quiet)
+    res = si.splrep(x, y, w=w, xb=xb, xe=xe, k=k, s=s, t=t, task=task, full_output=full_output, per=per, quiet=quiet)
+    if full_output:
+        tck, fp, ier, msg = res
+        return (rp.array(tck[0]), rp.array(tck[1]), tck[2]), fp, ier, msg
+    else:
+        tck = res
+        return (rp.array(tck[0]), rp.array(tck[1]), tck[2])
     
 class _TorchRegularGridInterpolator:
     def __init__(self, points, values, method='linear', bounds_error=False, fill_value=np.nan):

@@ -30,6 +30,8 @@ so  = sp.optimize if sp is not None else None
 # ----------------------------------------------------------------------------------------------------------------------  
 
 def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), tol=None, options=None): 
+    if not isinstance(args, tuple):
+        args = (args,)
     if rp.use_jax: 
         if bounds is not None:
              raise NotImplementedError('bounds are not supported for minimize in JAX')
@@ -45,6 +47,10 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
             cons_list = [constraints]
         elif isinstance(constraints, (list, tuple)):
             cons_list = list(constraints)
+        
+        for c in cons_list:
+            if 'args' in c and not isinstance(c['args'], tuple):
+                c['args'] = (c['args'],)
 
         # Collect all tensors from args, bounds, and constraints
         all_inputs = [args, bounds, cons_list]
@@ -286,6 +292,8 @@ def fmin_slsqp(func, x0, fprime=None, f_eqcons=None, fprime_eqcons=None,
                f_ieqcons=None, fprime_ieqcons=None, bounds=(), iter=100, 
                acc=1e-06, iprint=1, disp=None, full_output=0, 
                epsilon=1.4901161193847656e-08, callback=None, args=()): 
+    if not isinstance(args, tuple):
+        args = (args,)
     
     
 
@@ -379,7 +387,6 @@ def fmin_slsqp(func, x0, fprime=None, f_eqcons=None, fprime_eqcons=None,
                        def func_for_jac(x_t):
                             return tr.as_tensor(f_eqcons(rp.TorchArray(x_t), *args_passthrough))
                     
-
                        jac = tr.autograd.functional.jacobian(func_for_jac, x_tr)
                        return jac.detach().cpu().numpy()
              else:
@@ -407,12 +414,11 @@ def fmin_slsqp(func, x0, fprime=None, f_eqcons=None, fprime_eqcons=None,
                   wrapped_fprime_ieqcons = fprime_ieqcons
 
         x0_np = np.asarray(tr.as_tensor(x0).detach().cpu())
-        with tr.autograd.set_detect_anomaly(True):
-            res = so.fmin_slsqp(wrap_func, x0_np, fprime=fprime_to_use, 
-                                f_eqcons=wrapped_f_eqcons, fprime_eqcons=wrapped_fprime_eqcons, 
-                                f_ieqcons=wrapped_f_ieqcons, fprime_ieqcons=wrapped_fprime_ieqcons, 
-                                bounds=bounds, iter=iter, acc=acc, iprint=iprint, disp=disp, 
-                                full_output=full_output, epsilon=epsilon, callback=callback, args=args)
+        res = so.fmin_slsqp(wrap_func, x0_np, fprime=fprime_to_use, 
+                            f_eqcons=wrapped_f_eqcons, fprime_eqcons=wrapped_fprime_eqcons, 
+                            f_ieqcons=wrapped_f_ieqcons, fprime_ieqcons=wrapped_fprime_ieqcons, 
+                            bounds=bounds, iter=iter, acc=acc, iprint=iprint, disp=disp, 
+                            full_output=full_output, epsilon=epsilon, callback=callback, args=args)
             
         if full_output:
              x, obj, niter, imode, smessage = res
@@ -473,6 +479,8 @@ def _convert_optimize_result(res):
     return res
 
 def minimize_scalar(fun, bracket=None, bounds=None, args=(), method=None, tol=None, options=None): 
+    if not isinstance(args, tuple):
+        args = (args,)
     if rp.use_jax:
         import jax
         import jax.numpy as jnp
@@ -616,6 +624,8 @@ def minimize_scalar(fun, bracket=None, bounds=None, args=(), method=None, tol=No
         return so.minimize_scalar(fun, bracket=bracket, bounds=bounds, args=args, method=method, tol=tol, options=options)
 
 def brentq(f, a, b, args=(), xtol=2e-12, rtol=8.881784197001252e-16, maxiter=100, full_output=False, disp=True):
+    if not isinstance(args, tuple):
+        args = (args,)
     if rp.use_jax:
         import jax
         import jax.numpy as jnp
@@ -724,6 +734,8 @@ def brentq(f, a, b, args=(), xtol=2e-12, rtol=8.881784197001252e-16, maxiter=100
         return so.brentq(f, a, b, args=args, xtol=xtol, rtol=rtol, maxiter=maxiter, full_output=full_output, disp=disp)
 
 def fminbound(func, x1, x2, args=(), xtol=1e-05, maxfun=500, full_output=0, disp=1):
+    if not isinstance(args, tuple):
+        args = (args,)
     if rp.use_jax:
         import jax
         import jax.numpy as jnp
@@ -834,6 +846,8 @@ def fminbound(func, x1, x2, args=(), xtol=1e-05, maxfun=500, full_output=0, disp
         return so.fminbound(func, x1, x2, args=args, xtol=xtol, maxfun=maxfun, full_output=full_output, disp=disp)
 
 def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49012e-08, maxfev=0, band=None, epsfcn=None, factor=100, diag=None):
+    if not isinstance(args, tuple):
+        args = (args,)
     if rp.use_jax:
         import jax
         import jax.numpy as jnp
@@ -1035,6 +1049,8 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
             return rp.array(res)
 
 def root(fun, x0, args=(), method='hybr', jac=None, tol=None, callback=None, options=None):
+    if not isinstance(args, tuple):
+        args = (args,)
     if rp.use_jax:
         import jax
         import jax.numpy as jnp

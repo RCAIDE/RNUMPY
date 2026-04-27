@@ -293,7 +293,8 @@ class NumpyArray(Array,np.ndarray):
         
         name = _get_obj_name(self)
         val_name_desc = orig_val_str if orig_val_str else _format_val(value)
-        val_name_sugg = trans_val_str if trans_val_str else val_name_desc
+        val_name_where = trans_val_str if trans_val_str else val_name_desc
+        val_name_at = orig_val_str if orig_val_str else val_name_desc
         
         key_name_desc = source_key_np if source_key_np else _format_val(key)
         if not source_key_wp:
@@ -307,14 +308,14 @@ class NumpyArray(Array,np.ndarray):
         if is_simple_bool:
              raise TypeError(
                 f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} with a boolean mask is not allowed in differentiable code. "
-                f"Please use \n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
+                f"Please use \n{name} = rp.where({key_name_wp}, {val_name_where}, {name})\ninstead."
             )
         else:
              msg = f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} is not allowed in differentiable code. "
              if is_any_bool:
-                  msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\nor\n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
+                  msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_at})\nor\n{name} = rp.where({key_name_wp}, {val_name_where}, {name})\ninstead."
              else:
-                  msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\ninstead."
+                  msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_at})\ninstead."
              raise TypeError(msg)
 
     def __iadd__(self, other):
@@ -411,7 +412,8 @@ if torch is not None:
             
             name = _get_obj_name(self)
             val_name_desc = orig_val_str if orig_val_str else _format_val(value)
-            val_name_sugg = trans_val_str if trans_val_str else val_name_desc
+            val_name_where = trans_val_str if trans_val_str else val_name_desc
+            val_name_at = orig_val_str if orig_val_str else val_name_desc
             
             key_name_desc = source_key_np if source_key_np else _format_val(key)
             if not source_key_wp:
@@ -425,14 +427,14 @@ if torch is not None:
             if is_simple_bool:
                  raise TypeError(
                     f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} with a boolean mask is not allowed in differentiable code. "
-                    f"Please use \n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
+                    f"Please use \n{name} = rp.where({key_name_wp}, {val_name_where}, {name})\ninstead."
                 )
             else:
                  msg = f"RNUMPY: Inplace assignment {name}[{key_name_desc}] = {val_name_desc} is not allowed in differentiable code. "
                  if is_any_bool:
-                      msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\nor\n{name} = rp.where({key_name_wp}, {val_name_sugg}, {name})\ninstead."
+                      msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_at})\nor\n{name} = rp.where({key_name_wp}, {val_name_where}, {name})\ninstead."
                  else:
-                      msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_sugg})\ninstead."
+                      msg += f"Please use \n{name} = {name}.at[{key_name_desc}].set({val_name_at})\ninstead."
                  raise TypeError(msg)
 
         def __iadd__(self, other):
