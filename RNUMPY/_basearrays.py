@@ -2,7 +2,7 @@
 # (c) Copyright 2024 Aerospace Research Community LLC
 
 # Created:  Nov 2024 E. Botero
-# Modified: 
+## Modified: Mar 2026, E. Botero
 
 import numpy as np
 try:

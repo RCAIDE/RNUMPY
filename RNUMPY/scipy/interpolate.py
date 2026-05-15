@@ -2,7 +2,7 @@
 # (c) Copyright 2024 Aerospace Research Community LLC
 
 # Created:  Oct 2024 M. Clarke
-# Modified: 
+# Modified: May 2026, E. Botero
 
 # ----------------------------------------------------------------------------------------------------------------------
 #  IMPORTS
@@ -39,6 +39,109 @@ def RegularGridInterpolator(points, values, method='linear', bounds_error=False,
         def wrapped_si_interp(xi):
              return rp.array(f(xi))
         return wrapped_si_interp
+
+def griddata(points, values, xi, method='linear', fill_value=np.nan, rescale=False):
+    if rp.use_jax:
+        jnp = rp.jax_handle.numpy
+        if isinstance(points, tuple):
+            points = jnp.stack([jnp.asarray(p) for p in points], axis=-1)
+        else:
+            points = jnp.asarray(points)
+            
+        values = jnp.asarray(values)
+        
+        if isinstance(xi, tuple):
+            xi = jnp.stack([jnp.asarray(x) for x in xi], axis=-1)
+        else:
+            xi = jnp.asarray(xi)
+            
+        original_shape = xi.shape[:-1]
+        D = points.shape[-1]
+        xi_flat = xi.reshape(-1, D)
+        
+        diff = xi_flat[:, jnp.newaxis, :] - points[jnp.newaxis, :, :]
+        dist = jnp.sqrt(jnp.sum(diff**2, axis=-1))
+        
+        if method == 'nearest':
+            idx = jnp.argmin(dist, axis=-1)
+            res = values[idx]
+        else:
+            power = 1.0 if method == 'linear' else 3.0
+            eps = 1e-12
+            weights = 1.0 / (dist ** power + eps)
+            
+            exact_match = dist < eps
+            has_exact = jnp.any(exact_match, axis=-1)
+            
+            weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
+            
+            weights_expanded = weights
+            for _ in range(values.ndim - 1):
+                weights_expanded = jnp.expand_dims(weights_expanded, -1)
+                
+            res = jnp.sum(weights_expanded * jnp.expand_dims(values, 0), axis=1)
+            
+            match_idx = jnp.argmax(exact_match, axis=-1)
+            
+            has_exact_expanded = has_exact
+            for _ in range(res.ndim - 1):
+                has_exact_expanded = jnp.expand_dims(has_exact_expanded, -1)
+                
+            res = jnp.where(has_exact_expanded, values[match_idx], res)
+            
+        res = res.reshape(*original_shape, *values.shape[1:])
+        return rp.array(res)
+
+    elif rp.use_torch:
+        if isinstance(points, tuple):
+            points = tr.stack([tr.as_tensor(p) for p in points], dim=-1)
+        else:
+            points = tr.as_tensor(points)
+            
+        values = tr.as_tensor(values)
+        
+        if isinstance(xi, tuple):
+            xi = tr.stack([tr.as_tensor(x) for x in xi], dim=-1)
+        else:
+            xi = tr.as_tensor(xi)
+            
+        original_shape = xi.shape[:-1]
+        D = points.shape[-1]
+        xi_flat = xi.reshape(-1, D)
+        
+        dist = tr.cdist(xi_flat.to(tr.float32), points.to(tr.float32)).to(xi.dtype)
+        
+        if method == 'nearest':
+            idx = tr.argmin(dist, dim=-1)
+            res = values[idx]
+        else:
+            power = 1.0 if method == 'linear' else 3.0
+            eps = 1e-12
+            weights = 1.0 / (dist ** power + eps)
+            
+            exact_match = dist < eps
+            has_exact = exact_match.any(dim=-1)
+            
+            weights = weights / weights.sum(dim=-1, keepdim=True)
+            
+            weights_expanded = weights
+            for _ in range(values.ndim - 1):
+                weights_expanded = weights_expanded.unsqueeze(-1)
+                
+            res = (weights_expanded * values.unsqueeze(0)).sum(dim=1)
+            
+            if has_exact.any():
+                match_idx = exact_match.float().argmax(dim=-1)
+                res[has_exact] = values[match_idx[has_exact]]
+                
+        res = res.reshape(*original_shape, *values.shape[1:])
+        return TorchArray(res)
+
+    else:
+        points_sp = tuple(rp.array(p) for p in points) if isinstance(points, tuple) else rp.array(points)
+        xi_sp = tuple(rp.array(x) for x in xi) if isinstance(xi, tuple) else rp.array(xi)
+        res = si.griddata(points_sp, rp.array(values), xi_sp, method=method, fill_value=fill_value, rescale=rescale)
+        return rp.array(res)
 
 def interp1d(x, y, kind='linear', axis=-1, copy=True, bounds_error=None, fill_value=np.nan, assume_sorted=False):
     if rp.use_jax:

@@ -21,3 +21,7 @@ maintainers = [{ name = "The Developers" }]
 [project.urls]
 Homepage = "https://github.com/RCAIDE/RNUMPY"
 Issues = "https://github.com/RCAIDE/RNUMPY/issues"
+
+[tool.setuptools.package-data]
+RNUMPY = ["py.typed"]
+

@@ -1,7 +1,7 @@
 # src.py
 # (c) Copyright 2024 Aerospace Research Community LLC
 # Created:  Aug 2024 E. Botero
-# Modified:
+# Modified: Apr 2026, E. Botero
 
 # ----------------------------------------------------------------------------------------------------------------------
 #  Imports
@@ -1257,7 +1257,7 @@ def convolve(a, v, mode='full', *, precision=None, preferred_element_type=None):
 
 def clip(arr=None, /, min=None, max=None, ):
     if rp.use_jax:
-        return jnp.clip(arr=arr, min=min, max=max)
+        return jnp.clip(arr, min=min, max=max)
     elif rp.use_torch:
         return TorchArray(tr.clamp(arr, min=min, max=max))
     else:
@@ -3610,6 +3610,8 @@ def append(arr, values, axis=None):
 
 def resize(a, new_shape):
     if rp.use_jax:
+        if isinstance(new_shape, list):
+            new_shape = tuple(new_shape)
         return jnp.resize(a, new_shape)
     elif rp.use_torch:
         a_t = tr.as_tensor(a)

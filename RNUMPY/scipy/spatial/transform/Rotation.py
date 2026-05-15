@@ -295,8 +295,8 @@ class Rotation():
 
     # --- Methods supporting both Instance and Functional API ---
 
-    def apply(R, vectors, inverse=False): 
-        native_R = getattr(R, '_native', R)
+    def apply(self, vectors, inverse=False): 
+        native_R = getattr(self, '_native', self)
         res = native_R.apply(vectors, inverse=inverse)
         if rp.use_jax: return res
         elif rp.use_torch: return rp.TorchArray(res)
