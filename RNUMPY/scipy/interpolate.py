@@ -195,7 +195,7 @@ def interp1d(x, y, kind='linear', axis=-1, copy=True, bounds_error=None, fill_va
         return wrapped_si_interp
 
 def _torch_bspline_basis(x_eval, t, k):
-    n_basis = len(t) - k - 1
+    len(t) - k - 1
     x_eval = x_eval.unsqueeze(0)
     t_view = t.unsqueeze(1)
     
@@ -230,7 +230,7 @@ def _torch_bspline_basis(x_eval, t, k):
 
 def _jax_bspline_basis(x_eval, t, k):
     jnp = rp.jax_handle.numpy
-    n_basis = len(t) - k - 1
+    len(t) - k - 1
     x_eval = x_eval[jnp.newaxis, :]
     t_view = t[:, jnp.newaxis]
     

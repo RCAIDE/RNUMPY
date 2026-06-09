@@ -2,7 +2,6 @@
 # (c) Copyright 2024 Aerospace Research Community LLC
 
 import RNUMPY as rp
-import builtins
 
 def _to_array(x):
     if rp.use_jax:
@@ -120,7 +119,6 @@ def grad(f, argnums=0, has_aux=False):
             import jax
             return jax.grad(f, argnums=argnums, has_aux=has_aux)(*args, **kwargs)
         elif rp.use_torch:
-            import torch
             try:
                 from torch.func import grad as tgrad
                 return tgrad(f, argnums=argnums, has_aux=has_aux)(*args, **kwargs)

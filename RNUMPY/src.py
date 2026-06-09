@@ -1650,7 +1650,6 @@ def vectorize(pyfunc, *, excluded=frozenset({}), signature=None):
     if rp.use_jax:
         return jnp.vectorize(pyfunc=pyfunc, excluded=excluded, signature=signature)
     elif rp.use_torch:
-        import torch
         return TorchArray(tr.vmap(pyfunc)) # Note: very basic vmap use
     else:
         return NumpyArray(
@@ -2363,7 +2362,7 @@ def ravel_multi_index(multi_index, dims, mode='raise', order='C'):
     elif rp.use_torch:
         # manual calculation for ravel_multi_index
         res = tr.zeros_like(multi_index[0])
-        strides = tr.as_tensor(dims).tolist()
+        tr.as_tensor(dims).tolist()
         # simplified, only C order
         current_stride = 1
         for i in range(len(dims)-1, -1, -1):

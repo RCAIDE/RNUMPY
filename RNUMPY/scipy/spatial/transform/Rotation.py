@@ -9,7 +9,6 @@
 # ----------------------------------------------------------------------------------------------------------------------  
 
 import RNUMPY as rp
-from RNUMPY import NumpyArray
 try:
     import scipy.spatial.transform
 except ImportError:

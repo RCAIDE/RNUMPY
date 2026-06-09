@@ -276,8 +276,12 @@ def _is_library_call():
 class Array():
     pass
 
-class JaxArray(Array,jarray):
-     pass
+if jax is not None:
+    class JaxArray(Array, jarray):
+        pass
+else:
+    class JaxArray(Array):
+        pass
 
 class NumpyArray(Array,np.ndarray):
     def __new__(cls, input_array, *args, **kwargs):
