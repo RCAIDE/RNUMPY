@@ -195,7 +195,6 @@ def interp1d(x, y, kind='linear', axis=-1, copy=True, bounds_error=None, fill_va
         return wrapped_si_interp
 
 def _torch_bspline_basis(x_eval, t, k):
-    len(t) - k - 1
     x_eval = x_eval.unsqueeze(0)
     t_view = t.unsqueeze(1)
     
@@ -230,7 +229,6 @@ def _torch_bspline_basis(x_eval, t, k):
 
 def _jax_bspline_basis(x_eval, t, k):
     jnp = rp.jax_handle.numpy
-    len(t) - k - 1
     x_eval = x_eval[jnp.newaxis, :]
     t_view = t[:, jnp.newaxis]
     
@@ -499,3 +497,659 @@ class _TorchRegularGridInterpolator:
             res = tr.where(oob_mask, fill_val_tensor, res)
             
         return TorchArray(res.reshape(*original_shape, *res.shape[1:]))
+
+
+class PPoly:
+    def __init__(self, c, x, extrapolate=None, axis=0):
+        if rp.use_jax:
+            jnp = rp.jax_handle.numpy
+            self.c = jnp.asarray(c)
+            self.x = jnp.asarray(x)
+        elif rp.use_torch:
+            self.c = tr.as_tensor(c)
+            self.x = tr.as_tensor(x)
+        else:
+            self.c = np.asarray(c)
+            self.x = np.asarray(x)
+            
+        self.axis = axis
+        self.extrapolate = extrapolate
+
+    def __call__(self, x_new, nu=0, extrapolate=None):
+        if extrapolate is None:
+            extrapolate = self.extrapolate
+        if extrapolate is None:
+            extrapolate = True
+
+        x_new = rp.asarray(x_new)
+        x_eval = x_new
+        n = len(self.x)
+        
+        if extrapolate == 'periodic':
+            period = self.x[-1] - self.x[0]
+            x_eval = self.x[0] + rp.remainder(x_new - self.x[0], period)
+            
+        idx = rp.searchsorted(self.x, x_eval, side='right') - 1
+        idx = rp.clip(idx, 0, n - 2)
+        
+        dt = x_eval - self.x[idx]
+        
+        k = self.c.shape[0] - 1
+        if nu > k:
+            res_shape = x_new.shape + self.c.shape[2:]
+            res = rp.zeros(res_shape, dtype=self.c.dtype, device=getattr(self.c, 'device', None))
+        else:
+            if getattr(self, '_nu_factors', None) is None:
+                self._nu_factors = {}
+            if nu not in self._nu_factors:
+                import math
+                factors = []
+                for m in range(1, k - nu + 1):
+                    factors.append(math.factorial(k - m) // math.factorial(k - m - nu))
+                first_factor = math.factorial(k) // math.factorial(k - nu)
+                self._nu_factors[nu] = (first_factor, factors)
+                
+            first_factor, factors = self._nu_factors[nu]
+            res = self.c[0, idx] * first_factor
+            
+            trailing_dims = (...,) + (None,) * (self.c.ndim - 2)
+            dt_expanded = dt[trailing_dims]
+            
+            for m in range(1, k - nu + 1):
+                res = res * dt_expanded + self.c[m, idx] * factors[m - 1]
+                
+            if not extrapolate:
+                out_of_bounds = (x_eval < self.x[0]) | (x_eval > self.x[-1])
+                out_of_bounds_expanded = out_of_bounds[trailing_dims]
+                if rp.use_torch:
+                    nan_val = tr.tensor(float('nan'), dtype=res.dtype, device=res.device)
+                elif rp.use_jax:
+                    nan_val = j.numpy.nan
+                else:
+                    nan_val = np.nan
+                res = rp.where(out_of_bounds_expanded, nan_val, res)
+                
+        N_new = x_new.ndim
+        len_T = self.c.ndim - 2
+        if getattr(self, '_perm_cache', None) is None:
+            self._perm_cache = {}
+        perm_key = (N_new, len_T, self.axis)
+        if perm_key not in self._perm_cache:
+            self._perm_cache[perm_key] = list(range(N_new, N_new + self.axis)) + list(range(N_new)) + list(range(N_new + self.axis, N_new + len_T))
+            
+        perm = self._perm_cache[perm_key]
+        if perm:
+            res = rp.transpose(res, perm)
+        return rp.asarray(res)
+
+    def derivative(self, nu=1):
+        k = self.c.shape[0] - 1
+        if nu < 0:
+            return self.antiderivative(-nu)
+        if nu == 0:
+            return self
+            
+        if nu > k:
+            if rp.use_torch:
+                c_new = tr.zeros((1,) + self.c.shape[1:], dtype=self.c.dtype, device=self.c.device)
+            elif rp.use_jax:
+                jnp = rp.jax_handle.numpy
+                c_new = jnp.zeros((1,) + self.c.shape[1:], dtype=self.c.dtype)
+            else:
+                c_new = np.zeros((1,) + self.c.shape[1:], dtype=self.c.dtype)
+        else:
+            import math
+            new_slices = []
+            for m in range(k - nu + 1):
+                factor = math.factorial(k - m) // math.factorial(k - m - nu)
+                new_slices.append(self.c[m] * factor)
+                
+            if rp.use_torch:
+                c_new = tr.stack(new_slices, dim=0)
+            elif rp.use_jax:
+                jnp = rp.jax_handle.numpy
+                c_new = jnp.stack(new_slices, axis=0)
+            else:
+                c_new = np.stack(new_slices, axis=0)
+                
+        return PPoly(c_new, self.x, extrapolate=self.extrapolate, axis=self.axis)
+
+    def antiderivative(self, nu=1):
+        if nu < 0:
+            return self.derivative(-nu)
+        if nu == 0:
+            return self
+            
+        extrap = self.extrapolate
+        if extrap == 'periodic':
+            extrap = False
+            
+        current = self
+        for _ in range(nu):
+            k = current.c.shape[0] - 1
+            if rp.use_torch:
+                h = current.x[1:] - current.x[:-1]
+                h_exp = h
+                for _ in range(current.c.dim() - 2):
+                    h_exp = h_exp.unsqueeze(-1)
+                
+                Delta = 0.0
+                for m in range(k + 1):
+                    Delta = Delta + (current.c[m] / (k + 1 - m)) * (h_exp ** (k + 1 - m))
+                    
+                zero = tr.zeros((1,) + Delta.shape[1:], dtype=Delta.dtype, device=Delta.device)
+                C = tr.cumsum(tr.cat([zero, Delta], dim=0), dim=0)[:-1]
+                
+                new_slices = []
+                for m in range(k + 1):
+                    new_slices.append(current.c[m] / (k + 1 - m))
+                new_slices.append(C)
+                c_new = tr.stack(new_slices, dim=0)
+                
+            elif rp.use_jax:
+                jnp = rp.jax_handle.numpy
+                h = current.x[1:] - current.x[:-1]
+                h_exp = h
+                for _ in range(current.c.ndim - 2):
+                    h_exp = jnp.expand_dims(h_exp, -1)
+                
+                Delta = 0.0
+                for m in range(k + 1):
+                    Delta = Delta + (current.c[m] / (k + 1 - m)) * (h_exp ** (k + 1 - m))
+                    
+                zero = jnp.zeros((1,) + Delta.shape[1:], dtype=Delta.dtype)
+                C = jnp.cumsum(jnp.concatenate([zero, Delta], axis=0), axis=0)[:-1]
+                
+                new_slices = []
+                for m in range(k + 1):
+                    new_slices.append(current.c[m] / (k + 1 - m))
+                new_slices.append(C)
+                c_new = jnp.stack(new_slices, axis=0)
+                
+            else:
+                h = current.x[1:] - current.x[:-1]
+                h_exp = h
+                for _ in range(current.c.ndim - 2):
+                    h_exp = h_exp[..., None]
+                
+                Delta = 0.0
+                for m in range(k + 1):
+                    Delta = Delta + (current.c[m] / (k + 1 - m)) * (h_exp ** (k + 1 - m))
+                    
+                zero = np.zeros((1,) + Delta.shape[1:], dtype=Delta.dtype)
+                C = np.cumsum(np.concatenate([zero, Delta], axis=0), axis=0)[:-1]
+                
+                new_slices = []
+                for m in range(k + 1):
+                    new_slices.append(current.c[m] / (k + 1 - m))
+                new_slices.append(C)
+                c_new = np.stack(new_slices, axis=0)
+                
+            current = PPoly(c_new, current.x, extrapolate=extrap, axis=current.axis)
+            
+        return current
+
+    def integrate(self, a, b, extrapolate=None):
+        if extrapolate is None:
+            extrapolate = self.extrapolate
+        if extrapolate is None:
+            extrapolate = True
+
+        # Swap integration bounds if needed
+        sign = 1.0
+        if b < a:
+            a, b = b, a
+            sign = -1.0
+
+        I = self.antiderivative()
+
+        if extrapolate == 'periodic':
+            xs, xe = self.x[0], self.x[-1]
+            period = xe - xs
+            interval = b - a
+            
+            n_periods = int(interval // period)
+            left = interval % period
+            
+            val_xs = I(xs, extrapolate=False)
+            val_xe = I(xe, extrapolate=False)
+            period_integral = val_xe - val_xs
+            
+            res = period_integral * n_periods
+            
+            a_mapped = xs + (a - xs) % period
+            b_mapped = a_mapped + left
+            
+            if b_mapped <= xe:
+                res = res + (I(b_mapped, extrapolate=False) - I(a_mapped, extrapolate=False))
+            else:
+                res = res + (val_xe - I(a_mapped, extrapolate=False))
+                res = res + (I(xs + (b_mapped - xe), extrapolate=False) - val_xs)
+        else:
+            res = I(b, extrapolate=extrapolate) - I(a, extrapolate=extrapolate)
+            
+        return res * sign
+
+    def roots(self, discontinuity=True, extrapolate=None):
+        if extrapolate is None:
+            extrapolate = self.extrapolate
+        if extrapolate is None:
+            extrapolate = True
+            
+        if self.c.ndim > 2:
+            raise NotImplementedError("For multidimensional PPoly, this method is not implemented.")
+            
+        k = self.c.shape[0] - 1
+        if k == 0:
+            if rp.use_torch:
+                return TorchArray(tr.zeros(0, dtype=self.x.dtype, device=self.x.device))
+            else:
+                return rp.array(np.zeros(0, dtype=self.x.dtype))
+                
+        n = len(self.x)
+        h = self.x[1:] - self.x[:-1]
+        
+        c0 = self.c[0]
+        if rp.use_torch:
+            c0_safe = tr.where(tr.abs(c0) < 1e-12, tr.tensor(1e-12, dtype=c0.dtype, device=c0.device), c0)
+            # c_norm shape: (k, n-1); transpose to (n-1, k) for row assignment
+            c_norm = self.c[1:] / c0_safe.unsqueeze(0)
+            c_norm_T = c_norm.permute(1, 0)  # (n-1, k)
+
+            C = tr.zeros((n - 1, k, k), dtype=self.c.dtype, device=self.c.device)
+            C[:, 0, :] = -c_norm_T
+            if k > 1:
+                idx_row = tr.arange(1, k, device=self.c.device)
+                idx_col = tr.arange(k - 1, device=self.c.device)
+                C[:, idx_row, idx_col] = 1.0
+
+            roots_raw = tr.linalg.eigvals(C).detach().cpu().numpy()
+        elif rp.use_jax:
+            jnp = rp.jax_handle.numpy
+            c0_safe = jnp.where(jnp.abs(c0) < 1e-12, 1e-12, c0)
+            # c_norm shape: (k, n-1); transpose to (n-1, k)
+            c_norm = self.c[1:] / c0_safe[None, :]
+            c_norm_T = jnp.swapaxes(c_norm, 0, 1)  # (n-1, k)
+
+            C = jnp.zeros((n - 1, k, k), dtype=self.c.dtype)
+            C = C.at[:, 0, :].set(-c_norm_T)
+            if k > 1:
+                C = C.at[:, jnp.arange(1, k), jnp.arange(k - 1)].set(1.0)
+
+            roots_raw = np.array(jnp.linalg.eigvals(C))
+        else:
+            c0_safe = np.where(np.abs(c0) < 1e-12, 1e-12, c0)
+            # c_norm shape: (k, n-1); transpose to (n-1, k)
+            c_norm = np.asarray(self.c[1:]) / c0_safe[None, :]
+            c_norm_T = c_norm.T.reshape(n - 1, k)  # (n-1, k)
+
+            C = np.zeros((n - 1, k, k), dtype=float)
+            C[:, 0, :] = -c_norm_T
+            if k > 1:
+                C[:, np.arange(1, k), np.arange(k - 1)] = 1.0
+
+            roots_raw = np.linalg.eigvals(C)
+            
+        x_np = np.array(self.x)
+        h_np = np.array(h)
+        real_roots = []
+        
+        for i in range(n - 1):
+            roots_seg = roots_raw[i]
+            h_i = h_np[i]
+            x_i = x_np[i]
+
+            is_real = np.abs(roots_seg.imag) < 1e-12
+            r_seg = roots_seg.real[is_real]
+
+            if i == n - 2:
+                in_interval = (r_seg >= 0) & (r_seg <= h_i)
+            else:
+                in_interval = (r_seg >= 0) & (r_seg < h_i)
+
+            if extrapolate:
+                if i == 0:
+                    in_interval = in_interval | (r_seg < 0)
+                if i == n - 2:
+                    in_interval = in_interval | (r_seg > h_i)
+
+            valid_roots = r_seg[in_interval]
+            for r in valid_roots:
+                real_roots.append(x_i + r)
+
+        if not real_roots:
+            result = np.zeros(0)
+        else:
+            arr = np.sort(np.array(real_roots))
+            # Deduplicate roots that are within numerical tolerance of each other
+            mask = np.concatenate([[True], np.diff(arr) > 1e-10])
+            result = arr[mask]
+
+        if rp.use_torch:
+            return TorchArray(tr.as_tensor(result, dtype=self.x.dtype, device=self.x.device))
+        elif rp.use_jax:
+            jnp = rp.jax_handle.numpy
+            return rp.array(jnp.asarray(result, dtype=self.x.dtype))
+        else:
+            return rp.array(np.asarray(result, dtype=self.x.dtype))
+
+    def solve(self, y=0.0, discontinuity=True, extrapolate=None):
+        if rp.use_torch:
+            c_last_shifted = self.c[-1] - y
+            c_shifted = tr.cat([self.c[:-1], c_last_shifted.unsqueeze(0)], dim=0)
+        elif rp.use_jax:
+            c_shifted = self.c.at[-1].set(self.c[-1] - y)
+        else:
+            c_last_shifted = np.asarray(self.c[-1]) - y
+            c_shifted = np.concatenate([np.asarray(self.c[:-1]), c_last_shifted[None]], axis=0)
+
+        temp = PPoly(c_shifted, self.x, extrapolate=self.extrapolate, axis=self.axis)
+        return temp.roots(discontinuity=discontinuity, extrapolate=extrapolate)
+
+
+class CubicSpline(PPoly):
+    def __init__(self, x, y, axis=0, bc_type='not-a-knot', extrapolate=None):
+        if extrapolate is None:
+            if bc_type == 'periodic':
+                extrapolate = 'periodic'
+            else:
+                extrapolate = True
+                
+        if rp.use_jax:
+            jnp = rp.jax_handle.numpy
+            x = jnp.asarray(x)
+            y = jnp.asarray(y)
+        elif rp.use_torch:
+            x = tr.as_tensor(x)
+            y = tr.as_tensor(y)
+        else:
+            x = np.asarray(x)
+            y = np.asarray(y)
+            
+        n = len(x)
+        if n < 2:
+            raise ValueError("x must contain at least 2 elements")
+            
+        # Normalize axis to be positive
+        if axis < 0:
+            axis = axis + y.ndim
+            
+        if y.shape[axis] != n:
+            raise ValueError(f"y shape along axis {axis} must be {n}, got {y.shape[axis]}")
+            
+        if rp.use_torch:
+            y_rolled = tr.movedim(y, axis, 0)
+        elif rp.use_jax:
+            jnp = rp.jax_handle.numpy
+            y_rolled = jnp.moveaxis(y, axis, 0)
+        else:
+            y_rolled = np.moveaxis(y, axis, 0)
+            
+        h = x[1:] - x[:-1]
+        
+        h_exp = h
+        for _ in range(y_rolled.ndim - 1):
+            h_exp = h_exp[..., None]
+            
+        d = (y_rolled[1:] - y_rolled[:-1]) / h_exp
+        
+        h_left = h[1:]
+        h_right = h[:-1]
+        for _ in range(y_rolled.ndim - 1):
+            h_left = h_left[..., None]
+            h_right = h_right[..., None]
+            
+        if bc_type == 'periodic':
+            left_type = right_type = 'periodic'
+        else:
+            if isinstance(bc_type, tuple):
+                left_bc, right_bc = bc_type
+            else:
+                left_bc = right_bc = bc_type
+                
+            left_type, left_val = self._parse_bc(left_bc)
+            right_type, right_val = self._parse_bc(right_bc)
+            
+        trailing_shape = y_rolled.shape[1:]
+        
+        if rp.use_jax:
+            jnp = rp.jax_handle.numpy
+            A = jnp.zeros((n, n), dtype=x.dtype)
+            B = jnp.zeros((n,) + trailing_shape, dtype=y_rolled.dtype)
+            
+            rows = jnp.arange(1, n - 1)
+            A = A.at[rows, rows - 1].set(h[1:])
+            A = A.at[rows, rows].set(2.0 * (h[:-1] + h[1:]))
+            A = A.at[rows, rows + 1].set(h[:-1])
+            B = B.at[1:-1].set(3.0 * (h_left * d[:-1] + h_right * d[1:]))
+            
+            if bc_type == 'periodic':
+                A = A.at[0, 0].set(2.0 * (h[0] + h[n-2]))
+                A = A.at[0, 1].set(h[n-2])
+                A = A.at[0, n-2].set(h[0])
+                B = B.at[0].set(3.0 * (h[n-2] * d[0] + h[0] * d[n-2]))
+                A = A.at[n-1, 0].set(-1.0)
+                A = A.at[n-1, n-1].set(1.0)
+            else:
+                deriv_l = jnp.asarray(left_val, dtype=y_rolled.dtype) if left_val is not None else 0.0
+                deriv_r = jnp.asarray(right_val, dtype=y_rolled.dtype) if right_val is not None else 0.0
+                
+                if left_type == 1:
+                    A = A.at[0, 0].set(1.0)
+                    B = B.at[0].set(deriv_l)
+                elif left_type == 2:
+                    A = A.at[0, 0].set(2.0)
+                    A = A.at[0, 1].set(1.0)
+                    B = B.at[0].set(3.0 * d[0] - 0.5 * h[0] * deriv_l)
+                elif left_type == 'not-a-knot':
+                    if n == 2:
+                        A = A.at[0, 0].set(1.0)
+                        B = B.at[0].set(d[0])
+                    elif n == 3:
+                        A = A.at[0, 0].set(1.0)
+                        A = A.at[0, 1].set(1.0)
+                        B = B.at[0].set(2.0 * d[0])
+                    else:
+                        A = A.at[0, 0].set(h[1] ** 2)
+                        A = A.at[0, 1].set(h[1] ** 2 - h[0] ** 2)
+                        A = A.at[0, 2].set(-h[0] ** 2)
+                        B = B.at[0].set(2.0 * h[1] ** 2 * d[0] - 2.0 * h[0] ** 2 * d[1])
+                
+                if right_type == 1:
+                    A = A.at[n-1, n-1].set(1.0)
+                    B = B.at[n-1].set(deriv_r)
+                elif right_type == 2:
+                    A = A.at[n-1, n-2].set(1.0)
+                    A = A.at[n-1, n-1].set(2.0)
+                    B = B.at[n-1].set(3.0 * d[n-2] + 0.5 * h[n-2] * deriv_r)
+                elif right_type == 'not-a-knot':
+                    if n == 2:
+                        A = A.at[n-1, n-1].set(1.0)
+                        B = B.at[n-1].set(d[0])
+                    elif n == 3:
+                        A = A.at[n-1, n-2].set(1.0)
+                        A = A.at[n-1, n-1].set(1.0)
+                        B = B.at[n-1].set(2.0 * d[1])
+                    else:
+                        A = A.at[n-1, n-3].set(-h[n-2] ** 2)
+                        A = A.at[n-1, n-2].set(h[n-3] ** 2 - h[n-2] ** 2)
+                        A = A.at[n-1, n-1].set(h[n-3] ** 2)
+                        B = B.at[n-1].set(2.0 * h[n-3] ** 2 * d[n-2] - 2.0 * h[n-2] ** 2 * d[n-3])
+                        
+            B_flat = B.reshape(n, -1)
+            s_flat = jnp.linalg.solve(A, B_flat)
+            s = s_flat.reshape(B.shape)
+            
+        elif rp.use_torch:
+            A = tr.zeros((n, n), dtype=x.dtype, device=x.device)
+            B = tr.zeros((n,) + trailing_shape, dtype=y_rolled.dtype, device=y_rolled.device)
+            
+            rows = tr.arange(1, n - 1, device=x.device)
+            A[rows, rows - 1] = h[1:]
+            A[rows, rows] = 2.0 * (h[:-1] + h[1:])
+            A[rows, rows + 1] = h[:-1]
+            B[1:-1] = 3.0 * (h_left * d[:-1] + h_right * d[1:])
+            
+            if bc_type == 'periodic':
+                A[0, 0] = 2.0 * (h[0] + h[n-2])
+                A[0, 1] = h[n-2]
+                A[0, n-2] = h[0]
+                B[0] = 3.0 * (h[n-2] * d[0] + h[0] * d[n-2])
+                A[n-1, 0] = -1.0
+                A[n-1, n-1] = 1.0
+            else:
+                deriv_l = tr.as_tensor(left_val, dtype=y_rolled.dtype, device=y_rolled.device) if left_val is not None else tr.tensor(0.0, dtype=y_rolled.dtype, device=y_rolled.device)
+                deriv_r = tr.as_tensor(right_val, dtype=y_rolled.dtype, device=y_rolled.device) if right_val is not None else tr.tensor(0.0, dtype=y_rolled.dtype, device=y_rolled.device)
+                
+                if left_type == 1:
+                    A[0, 0] = 1.0
+                    B[0] = deriv_l
+                elif left_type == 2:
+                    A[0, 0] = 2.0
+                    A[0, 1] = 1.0
+                    B[0] = 3.0 * d[0] - 0.5 * h[0] * deriv_l
+                elif left_type == 'not-a-knot':
+                    if n == 2:
+                        A[0, 0] = 1.0
+                        B[0] = d[0]
+                    elif n == 3:
+                        A[0, 0] = 1.0
+                        A[0, 1] = 1.0
+                        B[0] = 2.0 * d[0]
+                    else:
+                        A[0, 0] = h[1] ** 2
+                        A[0, 1] = h[1] ** 2 - h[0] ** 2
+                        A[0, 2] = -h[0] ** 2
+                        B[0] = 2.0 * h[1] ** 2 * d[0] - 2.0 * h[0] ** 2 * d[1]
+                        
+                if right_type == 1:
+                    A[n-1, n-1] = 1.0
+                    B[n-1] = deriv_r
+                elif right_type == 2:
+                    A[n-1, n-2] = 1.0
+                    A[n-1, n-1] = 2.0
+                    B[n-1] = 3.0 * d[n-2] + 0.5 * h[n-2] * deriv_r
+                elif right_type == 'not-a-knot':
+                    if n == 2:
+                        A[n-1, n-1] = 1.0
+                        B[n-1] = d[0]
+                    elif n == 3:
+                        A[n-1, n-2] = 1.0
+                        A[n-1, n-1] = 1.0
+                        B[n-1] = 2.0 * d[1]
+                    else:
+                        A[n-1, n-3] = -h[n-2] ** 2
+                        A[n-1, n-2] = h[n-3] ** 2 - h[n-2] ** 2
+                        A[n-1, n-1] = h[n-3] ** 2
+                        B[n-1] = 2.0 * h[n-3] ** 2 * d[n-2] - 2.0 * h[n-2] ** 2 * d[n-3]
+                        
+            B_flat = B.reshape(n, -1)
+            s_flat = tr.linalg.solve(A, B_flat)
+            s = s_flat.reshape(B.shape)
+            
+        else:
+            A = np.zeros((n, n), dtype=x.dtype)
+            B = np.zeros((n,) + trailing_shape, dtype=y_rolled.dtype)
+            
+            rows = np.arange(1, n - 1)
+            A[rows, rows - 1] = h[1:]
+            A[rows, rows] = 2.0 * (h[:-1] + h[1:])
+            A[rows, rows + 1] = h[:-1]
+            B[1:-1] = 3.0 * (h_left * d[:-1] + h_right * d[1:])
+            
+            if bc_type == 'periodic':
+                A[0, 0] = 2.0 * (h[0] + h[n-2])
+                A[0, 1] = h[n-2]
+                A[0, n-2] = h[0]
+                B[0] = 3.0 * (h[n-2] * d[0] + h[0] * d[n-2])
+                A[n-1, 0] = -1.0
+                A[n-1, n-1] = 1.0
+            else:
+                deriv_l = np.asarray(left_val, dtype=y_rolled.dtype) if left_val is not None else 0.0
+                deriv_r = np.asarray(right_val, dtype=y_rolled.dtype) if right_val is not None else 0.0
+                
+                if left_type == 1:
+                    A[0, 0] = 1.0
+                    B[0] = deriv_l
+                elif left_type == 2:
+                    A[0, 0] = 2.0
+                    A[0, 1] = 1.0
+                    B[0] = 3.0 * d[0] - 0.5 * h[0] * deriv_l
+                elif left_type == 'not-a-knot':
+                    if n == 2:
+                        A[0, 0] = 1.0
+                        B[0] = d[0]
+                    elif n == 3:
+                        A[0, 0] = 1.0
+                        A[0, 1] = 1.0
+                        B[0] = 2.0 * d[0]
+                    else:
+                        A[0, 0] = h[1] ** 2
+                        A[0, 1] = h[1] ** 2 - h[0] ** 2
+                        A[0, 2] = -h[0] ** 2
+                        B[0] = 2.0 * h[1] ** 2 * d[0] - 2.0 * h[0] ** 2 * d[1]
+                        
+                if right_type == 1:
+                    A[n-1, n-1] = 1.0
+                    B[n-1] = deriv_r
+                elif right_type == 2:
+                    A[n-1, n-2] = 1.0
+                    A[n-1, n-1] = 2.0
+                    B[n-1] = 3.0 * d[n-2] + 0.5 * h[n-2] * deriv_r
+                elif right_type == 'not-a-knot':
+                    if n == 2:
+                        A[n-1, n-1] = 1.0
+                        B[n-1] = d[0]
+                    elif n == 3:
+                        A[n-1, n-2] = 1.0
+                        A[n-1, n-1] = 1.0
+                        B[n-1] = 2.0 * d[1]
+                    else:
+                        A[n-1, n-3] = -h[n-2] ** 2
+                        A[n-1, n-2] = h[n-3] ** 2 - h[n-2] ** 2
+                        A[n-1, n-1] = h[n-3] ** 2
+                        B[n-1] = 2.0 * h[n-3] ** 2 * d[n-2] - 2.0 * h[n-2] ** 2 * d[n-3]
+                        
+            B_flat = B.reshape(n, -1)
+            s_flat = np.linalg.solve(A, B_flat)
+            s = s_flat.reshape(B.shape)
+            
+        c3 = y_rolled[:-1]
+        c2 = s[:-1]
+        
+        if rp.use_torch:
+            c1 = 3.0 * d / h_exp - (2.0 * s[:-1] + s[1:]) / h_exp
+            c0 = (s[:-1] + s[1:]) / (h_exp ** 2) - 2.0 * d / (h_exp ** 2)
+            c = tr.stack([c0, c1, c2, c3], dim=0)
+        elif rp.use_jax:
+            c1 = 3.0 * d / h_exp - (2.0 * s[:-1] + s[1:]) / h_exp
+            c0 = (s[:-1] + s[1:]) / (h_exp ** 2) - 2.0 * d / (h_exp ** 2)
+            c = jnp.stack([c0, c1, c2, c3], axis=0)
+        else:
+            c1 = 3.0 * d / h_exp - (2.0 * s[:-1] + s[1:]) / h_exp
+            c0 = (s[:-1] + s[1:]) / (h_exp ** 2) - 2.0 * d / (h_exp ** 2)
+            c = np.stack([c0, c1, c2, c3], axis=0)
+            
+        super().__init__(c, x, extrapolate=extrapolate, axis=axis)
+        self.bc_type = bc_type
+
+    def _parse_bc(self, bc):
+        if isinstance(bc, str):
+            if bc == 'clamped':
+                return 1, 0.0
+            elif bc == 'natural':
+                return 2, 0.0
+            elif bc == 'not-a-knot':
+                return 'not-a-knot', None
+            else:
+                raise ValueError(f"Unknown boundary condition: {bc}")
+        elif isinstance(bc, tuple):
+            if len(bc) != 2:
+                raise ValueError("Boundary condition tuple must have length 2")
+            order, val = bc
+            if order not in (1, 2):
+                raise ValueError("Boundary condition order must be 1 or 2")
+            return order, val
+        else:
+            raise ValueError(f"Invalid boundary condition type: {bc}")
+

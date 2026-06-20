@@ -162,8 +162,8 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                               else: L_val = L_val - m_b * (b_v - x_v[b_i])
                          return L_val
 
-                    lagrangian = eval_lagrangian(x, diff_params)
-                    tr.autograd.grad(lagrangian, x, create_graph=True)[0]
+                    # lagrangian = eval_lagrangian(x, diff_params)
+                    # tr.autograd.grad(lagrangian, x, create_graph=True)[0]
                     
                     # c_active(x, p) for the KKT system
                     c_active_vals = []

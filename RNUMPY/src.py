@@ -2042,6 +2042,49 @@ def polyval(p, x, *, unroll=16):
         return NumpyArray(np.polyval(p, x))
 # Note: original code used NumpyArray(np.polyval(p, x)) which is fine.
 
+def polyfit(x, y, deg, rcond=None, full=False, w=None, cov=False):
+    if rp.use_jax:
+        # JAX polyfit might return a tuple depending on full/cov
+        res = jnp.polyfit(x, y, deg, rcond=rcond, full=full, w=w, cov=cov)
+        return res
+    elif rp.use_torch:
+        x_t = tr.as_tensor(x)
+        y_t = tr.as_tensor(y)
+        
+        if x_t.dtype not in (tr.float32, tr.float64, tr.complex64, tr.complex128):
+            x_t = x_t.to(tr.float32)
+        if y_t.dtype not in (tr.float32, tr.float64, tr.complex64, tr.complex128):
+            y_t = y_t.to(tr.float32)
+            
+        A = tr.vander(x_t, N=deg + 1, increasing=False)
+        
+        if w is not None:
+            w_t = tr.as_tensor(w, dtype=A.dtype, device=A.device)
+            A = A * w_t.unsqueeze(-1)
+            if y_t.ndim == 2:
+                y_t = y_t * w_t.unsqueeze(-1)
+            else:
+                y_t = y_t * w_t
+                
+        # torch lstsq
+        res = tr.linalg.lstsq(A, y_t, rcond=rcond)
+        
+        p = res.solution
+        
+        if full:
+            return TorchArray(p), TorchArray(res.residuals), TorchArray(res.rank), TorchArray(res.singular_values), rcond
+        elif cov:
+            raise NotImplementedError('Covariance matrix calculation is not supported for PyTorch polyfit yet.')
+        else:
+            return TorchArray(p)
+    else:
+        # numpy returns tuple or array based on full/cov
+        res = np.polyfit(x, y, deg, rcond=rcond, full=full, w=w, cov=cov)
+        if isinstance(res, tuple):
+            return tuple(NumpyArray(r) if isinstance(r, np.ndarray) else r for r in res)
+        else:
+            return NumpyArray(res)
+
 
 def bmat(): raise NotImplementedError
 
@@ -2321,17 +2364,22 @@ def nonzero(a, *, size=None, fill_value=None):
         return NumpyArray(np.nonzero(a))
 
 
-def where(condition, x, y, /, *, size=None, fill_value=None):
+def where(condition, x=None, y=None, /, *, size=None, fill_value=None):
     if rp.use_jax:
+        if x is None:
+            return jnp.where(condition, size=size, fill_value=fill_value)
         return jnp.where(condition, x, y, size=size, fill_value=fill_value)
     elif rp.use_torch:
-        condition_t = tr.as_tensor(condition)
+        condition_t = condition if isinstance(condition, tr.Tensor) else tr.as_tensor(condition)
         if x is None:
             return [TorchArray(r) for r in tr.nonzero(condition_t, as_tuple=True)]
-        return TorchArray(tr.where(condition_t, tr.as_tensor(x), tr.as_tensor(y)))
+        x_t = x if isinstance(x, (tr.Tensor, int, float, bool)) else tr.as_tensor(x)
+        y_t = y if isinstance(y, (tr.Tensor, int, float, bool)) else tr.as_tensor(y)
+        return TorchArray(tr.where(condition_t, x_t, y_t))
     else:
         if x is None:
             warnings.warn("NP and JAX NP where have different behavior with a single input, check JAX documentation")
+            return tuple(NumpyArray(r) for r in np.where(condition))
         return NumpyArray(np.where(condition, x, y))
 
 
@@ -2362,7 +2410,6 @@ def ravel_multi_index(multi_index, dims, mode='raise', order='C'):
     elif rp.use_torch:
         # manual calculation for ravel_multi_index
         res = tr.zeros_like(multi_index[0])
-        tr.as_tensor(dims).tolist()
         # simplified, only C order
         current_stride = 1
         for i in range(len(dims)-1, -1, -1):
