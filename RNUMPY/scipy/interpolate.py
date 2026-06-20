@@ -505,15 +505,30 @@ class PPoly:
             jnp = rp.jax_handle.numpy
             self.c = jnp.asarray(c)
             self.x = jnp.asarray(x)
+            self._nan_val = j.numpy.nan
+            self._device = None
         elif rp.use_torch:
             self.c = tr.as_tensor(c)
             self.x = tr.as_tensor(x)
+            self._nan_val = tr.tensor(float('nan'), dtype=self.c.dtype, device=self.c.device)
+            # Access the device directly to honor the strict fail-loudly mandate
+            self._device = self.c.device
         else:
             self.c = np.asarray(c)
             self.x = np.asarray(x)
+            self._nan_val = np.nan
+            self._device = None
             
         self.axis = axis
         self.extrapolate = extrapolate
+        self._nu_factors = {}
+        self._perm_cache = {}
+        
+        # Cache unchanging structural dimensions at build time to clear the hot path
+        self._k = self.c.shape[0] - 1
+        self._len_T = self.c.ndim - 2
+        self._n_minus_2 = len(self.x) - 2
+        self._trailing_dims = (...,) + (None,) * self._len_T
 
     def __call__(self, x_new, nu=0, extrapolate=None):
         if extrapolate is None:
@@ -523,64 +538,51 @@ class PPoly:
 
         x_new = rp.asarray(x_new)
         x_eval = x_new
-        n = len(self.x)
         
         if extrapolate == 'periodic':
             period = self.x[-1] - self.x[0]
             x_eval = self.x[0] + rp.remainder(x_new - self.x[0], period)
             
         idx = rp.searchsorted(self.x, x_eval, side='right') - 1
-        idx = rp.clip(idx, 0, n - 2)
+        idx = rp.clip(idx, 0, self._n_minus_2)
         
         dt = x_eval - self.x[idx]
         
-        k = self.c.shape[0] - 1
-        if nu > k:
+        if nu > self._k:
             res_shape = x_new.shape + self.c.shape[2:]
-            res = rp.zeros(res_shape, dtype=self.c.dtype, device=getattr(self.c, 'device', None))
+            res = rp.zeros(res_shape, dtype=self.c.dtype, device=self._device)
         else:
-            if getattr(self, '_nu_factors', None) is None:
-                self._nu_factors = {}
             if nu not in self._nu_factors:
                 import math
                 factors = []
-                for m in range(1, k - nu + 1):
-                    factors.append(math.factorial(k - m) // math.factorial(k - m - nu))
-                first_factor = math.factorial(k) // math.factorial(k - nu)
+                for m in range(1, self._k - nu + 1):
+                    factors.append(math.factorial(self._k - m) // math.factorial(self._k - m - nu))
+                first_factor = math.factorial(self._k) // math.factorial(self._k - nu)
                 self._nu_factors[nu] = (first_factor, factors)
                 
             first_factor, factors = self._nu_factors[nu]
             res = self.c[0, idx] * first_factor
             
-            trailing_dims = (...,) + (None,) * (self.c.ndim - 2)
-            dt_expanded = dt[trailing_dims]
+            dt_expanded = dt[self._trailing_dims]
             
-            for m in range(1, k - nu + 1):
+            for m in range(1, self._k - nu + 1):
                 res = res * dt_expanded + self.c[m, idx] * factors[m - 1]
                 
             if not extrapolate:
                 out_of_bounds = (x_eval < self.x[0]) | (x_eval > self.x[-1])
-                out_of_bounds_expanded = out_of_bounds[trailing_dims]
-                if rp.use_torch:
-                    nan_val = tr.tensor(float('nan'), dtype=res.dtype, device=res.device)
-                elif rp.use_jax:
-                    nan_val = j.numpy.nan
-                else:
-                    nan_val = np.nan
-                res = rp.where(out_of_bounds_expanded, nan_val, res)
+                out_of_bounds_expanded = out_of_bounds[self._trailing_dims]
+                res = rp.where(out_of_bounds_expanded, self._nan_val, res)
                 
         N_new = x_new.ndim
-        len_T = self.c.ndim - 2
-        if getattr(self, '_perm_cache', None) is None:
-            self._perm_cache = {}
-        perm_key = (N_new, len_T, self.axis)
-        if perm_key not in self._perm_cache:
-            self._perm_cache[perm_key] = list(range(N_new, N_new + self.axis)) + list(range(N_new)) + list(range(N_new + self.axis, N_new + len_T))
+        
+        # Simplify the lookup key since internal matrix layout properties are frozen constants
+        if N_new not in self._perm_cache:
+            self._perm_cache[N_new] = list(range(N_new, N_new + self.axis)) + list(range(N_new)) + list(range(N_new + self.axis, N_new + self._len_T))
             
-        perm = self._perm_cache[perm_key]
+        perm = self._perm_cache[N_new]
         if perm:
             res = rp.transpose(res, perm)
-        return rp.asarray(res)
+        return res
 
     def derivative(self, nu=1):
         k = self.c.shape[0] - 1
