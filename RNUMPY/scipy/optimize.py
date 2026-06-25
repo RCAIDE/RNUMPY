@@ -435,7 +435,10 @@ def fmin_slsqp(func, x0, fprime=None, f_eqcons=None, fprime_eqcons=None,
 def _find_tensors(obj):
     import torch as tr
     tensors = []
-    if isinstance(obj, tr.Tensor):
+    
+    if isinstance(obj, type):
+        return tensors
+    elif isinstance(obj, tr.Tensor):
         tensors.append(obj)
     elif isinstance(obj, (list, tuple)):
         for item in obj:
@@ -446,6 +449,7 @@ def _find_tensors(obj):
     elif hasattr(obj, 'items'): 
         for k, v in obj.items():
             tensors.extend(_find_tensors(v))
+            
     return tensors
 
 def _replace_tensors(obj, tensors, state):

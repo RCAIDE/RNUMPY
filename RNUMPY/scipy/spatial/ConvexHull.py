@@ -39,13 +39,14 @@ class ConvexHull:
         self._hull = scipy.spatial.ConvexHull(points_np, incremental=incremental, qhull_options=qhull_options)
         
         # Wrap results back into RNUMPY arrays
-        self.points      = rp.array(self._hull.points)
+        dtype = rp.float64 if rp.x64_enabled else rp.float32
+        self.points      = rp.array(self._hull.points,dtype=dtype)
         self.vertices    = rp.array(self._hull.vertices)
         self.simplices   = rp.array(self._hull.simplices)
         self.neighbors   = rp.array(self._hull.neighbors)
         self.equations   = rp.array(self._hull.equations)
-        self.min_bound   = rp.array(self._hull.min_bound)
-        self.max_bound   = rp.array(self._hull.max_bound)
+        self.min_bound   = rp.array(self._hull.min_bound,dtype=dtype)
+        self.max_bound   = rp.array(self._hull.max_bound,dtype=dtype)
         
         # Compute area and volume differentiably if possible
         if rp.use_jax or rp.use_torch:
