@@ -1348,7 +1348,7 @@ def interp(x, xp, fp, left=None, right=None, period=None):
         if period is not None:
              raise NotImplementedError("PyTorch interp with period not implemented")
         x_t = tr.as_tensor(x)
-        xp_t = tr.as_tensor(xp)
+        xp_t = tr.as_tensor(xp).contiguous()
         fp_t = tr.as_tensor(fp)
         
         # Ensure xp is sorted (NumPy requires xp to be increasing)
@@ -1768,6 +1768,8 @@ def full(shape, fill_value, dtype=None, *, device=None):
     if rp.use_jax:
         return jnp.full(shape, fill_value, dtype=dtype, device=device)
     elif rp.use_torch:
+        if isinstance(shape, int):
+            shape = (shape,)
         return TorchArray(tr.full(shape, fill_value, dtype=_to_torch_dtype(dtype), device=device))
     else:
         return NumpyArray(np.full(shape, fill_value, dtype=dtype, device=device))
@@ -2820,7 +2822,12 @@ def searchsorted(a, v, side='left', sorter=None, *, method='scan'):
     if rp.use_jax:
         return jnp.searchsorted(a, v, side=side, sorter=sorter, method=method)
     elif rp.use_torch:
-        return TorchArray(tr.searchsorted(a, v, side=side, sorter=sorter))
+        # Convert to base tensors and make contiguous; direct attribute access is safe here
+        # since tr.as_tensor guarantees torch.Tensor instances at this point.
+        a_base = tr.as_tensor(a).contiguous().as_subclass(tr.Tensor)
+        v_base = tr.as_tensor(v).contiguous().as_subclass(tr.Tensor)
+        sorter_base = sorter.as_subclass(tr.Tensor) if isinstance(sorter, tr.Tensor) else sorter
+        return TorchArray(tr.searchsorted(a_base, v_base, side=side, sorter=sorter_base))
     else:
         return NumpyArray(np.searchsorted(a, v, side=side, sorter=sorter))
 

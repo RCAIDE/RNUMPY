@@ -1135,6 +1135,23 @@ class CubicSpline(PPoly):
         super().__init__(c, x, extrapolate=extrapolate, axis=axis)
         self.bc_type = bc_type
 
+        # ----------------------------------------------------------------------
+        #  Rank-Invariant Cache Warm-Up
+        # ----------------------------------------------------------------------
+        try:
+            if rp.use_jax:
+                jnp = rp.jax_handle.numpy
+                # Pass a 1D array matching the operational rank (-1,) used 
+                # by the surrogate wrappers. This forces _perm_cache[1] to 
+                # initialize completely before the first JAX trace.
+                self(jnp.array([x[0]], dtype=x.dtype))
+            elif rp.use_torch:
+                self(tr.as_tensor([x[0]], dtype=x.dtype))
+            else:
+                self(np.array([x[0]], dtype=x.dtype))
+        except Exception:
+            pass
+
     def _parse_bc(self, bc):
         if isinstance(bc, str):
             if bc == 'clamped':

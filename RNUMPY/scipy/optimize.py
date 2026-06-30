@@ -454,7 +454,10 @@ def _find_tensors(obj):
 
 def _replace_tensors(obj, tensors, state):
     import torch as tr
-    if isinstance(obj, tr.Tensor):
+    
+    if isinstance(obj, type):
+        return obj
+    elif isinstance(obj, tr.Tensor):
         val = tensors[state['idx']]
         state['idx'] += 1
         return val
@@ -470,6 +473,7 @@ def _replace_tensors(obj, tensors, state):
         for k, v in obj.items():
             new_obj[k] = _replace_tensors(v, tensors, state)
         return new_obj
+        
     return obj
 
 def _convert_optimize_result(res):
@@ -855,6 +859,7 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
     if rp.use_jax:
         import jax
         import jax.numpy as jnp
+        # jax.config.update("jax_check_tracer_leaks", True)
         
         args_flat, args_tree = jax.tree_util.tree_flatten(args)
         
@@ -872,10 +877,15 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
                     return np.asarray(jax.device_get(res))
                 fprime_to_use = fprime_np
             else:
-                def fprime_autograd_np(x_v):
-                    jac_fn = jax.jacobian(lambda x: func(rp.array(x), *current_args).ravel())
+                def fprime_autograd_np(x_v, *args_flat):
+                    jac_fn = jax.jacobian(
+                        lambda x: func(
+                            rp.array(x), 
+                            *_replace_tensors(args, args_flat, {'idx': 0})
+                        ).ravel()
+                    )
                     res = jac_fn(jnp.array(x_v))
-                    return np.asarray(jax.device_get(res))
+                    return res
                 fprime_to_use = fprime_autograd_np
             
             res = so.fsolve(fun_np, np.asarray(x0_in), args=(), fprime=fprime_to_use, full_output=True, 

@@ -1,6 +1,7 @@
 # autograd.py
 # (c) Copyright 2024 Aerospace Research Community LLC
 
+import functools
 import RNUMPY as rp
 
 def _to_array(x):
@@ -266,3 +267,64 @@ def vjp(f, *primals, has_aux=False):
                   return y0[0], y0[1], vjp_fun
              return y0, None, vjp_fun # Fallback
         return y0, vjp_fun
+
+
+def jit(f=None, *, static_argnums=None, **kwargs):
+    """JIT-compile a function for the active backend.
+
+    Uses lazy initialization: the function is compiled exactly once per backend
+    configuration and that handle is cached for all subsequent calls. If the
+    active backend changes at runtime (e.g. NumPy -> JAX), a single
+    recompilation is triggered automatically.
+
+    Supports both bare and parameterized decorator syntax::
+
+        @rp.jit
+        def func(x): ...
+
+        @rp.jit(static_argnums=(1,))
+        def func(x, static_param): ...
+
+    Parameters
+    ----------
+    static_argnums : int or tuple of int, optional
+        Indices of arguments treated as compile-time constants (JAX only).
+        Silently ignored for Torch and NumPy backends.
+    **kwargs
+        Additional keyword arguments forwarded to the backend compiler,
+        e.g. ``mode`` or ``backend`` for ``torch.compile``.
+    """
+    def decorator(func):
+        _compiled   = None
+        _last_state = None
+
+        @functools.wraps(func)
+        def wrapper(*args, **kw):
+            nonlocal _compiled, _last_state
+
+            current_state = (rp.use_jax, rp.use_torch)
+
+            # Compile exactly once per backend state; recompile only if toggled.
+            if _compiled is None or _last_state != current_state:
+                _last_state = current_state
+
+                if rp.use_jax:
+                    import jax
+                    _compiled = jax.jit(func, static_argnums=static_argnums, **kwargs)
+
+                elif rp.use_torch:
+                    # Dynamo compiling is filled with issues here
+                    _compiled = func
+
+                else:
+                    # NumPy has no JIT; act as a transparent passthrough
+                    _compiled = func
+
+            return _compiled(*args, **kw)
+
+        return wrapper
+
+    # Allow both @rp.jit and @rp.jit(static_argnums=...)
+    if f is not None:
+        return decorator(f)
+    return decorator
