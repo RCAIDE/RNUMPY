@@ -391,17 +391,49 @@ if torch is not None:
             elif isinstance(index, tuple):
                 if builtins.any(isinstance(i, slice) and getattr(i, 'step', None) is not None and i.step < 0 for i in index):
                     has_neg_step = True
-
             if has_neg_step:
-                # Fallback: PyTorch slicing with negative steps can be restrictive depending on version/subclass.
-                # For basic 1D reverse [::-1], use flip.
-                if isinstance(index, slice) and index == builtins.slice(None, None, -1) and self.dim() == 1:
-                     return torch.flip(self, [0]).as_subclass(TorchArray)
-                
-                # General case fallback to numpy for complex negative step slicing
-                np_res = self.detach().cpu().numpy()[index]
-                # PyTorch cannot convert numpy arrays with negative strides directly, so always copy
-                return TorchArray(np_res.copy()).to(self.device).as_subclass(TorchArray)
+                # Attempt native PyTorch negative slicing first
+                try:
+                    res = super().__getitem__(index)
+                    if isinstance(res, ttensor) and not isinstance(res, TorchArray):
+                        return res.as_subclass(TorchArray)
+                    return res
+                except (ValueError, RuntimeError, IndexError):
+                    # Autograd-safe fallback using torch.flip for full reversals
+                    index_tuple = index if isinstance(index, tuple) else (index,)
+                    flip_dims = []
+                    pos_index = []
+                    
+                    out_dim = 0
+                    for i in index_tuple:
+                        if i is None:
+                            pos_index.append(i)
+                            out_dim += 1
+                        elif isinstance(i, int):
+                            pos_index.append(i)
+                            # Integer indices reduce the dimension count
+                        else:
+                            if isinstance(i, slice) and getattr(i, 'step', None) is not None and i.step < 0:
+                                if i.step != -1 or i.start is not None or i.stop is not None:
+                                    raise NotImplementedError(
+                                        "TorchArray autograd fallback only supports full [::-1] reversals."
+                                    )
+                                flip_dims.append(out_dim)
+                                pos_index.append(builtins.slice(None))
+                            else:
+                                pos_index.append(i)
+                            out_dim += 1
+                    
+                    # Apply the positive slices
+                    res = super().__getitem__(tuple(pos_index) if isinstance(index, tuple) else pos_index[0])
+                    
+                    # Apply the flips to the target output dimensions
+                    if flip_dims:
+                        res = torch.flip(res, dims=flip_dims)
+                    
+                    if isinstance(res, ttensor) and not isinstance(res, TorchArray):
+                        return res.as_subclass(TorchArray)
+                    return res
 
             res = super().__getitem__(index)
             if isinstance(res, ttensor) and not isinstance(res, TorchArray):
