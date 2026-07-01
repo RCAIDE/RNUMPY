@@ -66,7 +66,15 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                 def fun_np(x_val):
                     curr_args, curr_bounds, curr_cons = get_current_inputs(params_in)
                     res_val = fun(rp.array(x_val, dtype=dt), *curr_args)
-                    return tr.as_tensor(res_val).detach().cpu().numpy()
+                    return tr.as_tensor(res_val).detach().cpu().numpy().astype('float64')
+
+                def jac_np(x_val):
+                    curr_args, _, _ = get_current_inputs(params_in)
+                    with tr.enable_grad():
+                        x_tr = tr.tensor(x_val, dtype=dt, requires_grad=True)
+                        obj_val = tr.as_tensor(fun(rp.array(x_tr, dtype=dt), *curr_args))
+                        grad = tr.autograd.grad(obj_val, x_tr)[0]
+                    return grad.detach().cpu().numpy().astype('float64')
 
                 so_cons = []
                 curr_all = get_current_inputs(params_in)
@@ -78,11 +86,31 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                         c_curr = c_curr_all[2][idx]
                         c_args = c_curr.get('args', ())
                         val = c_curr['fun'](rp.array(x_v, dtype=dt), *c_args)
-                        return tr.as_tensor(val).detach().cpu().numpy()
-                    so_cons.append({'type': c['type'], 'fun': c_np})
+                        return tr.as_tensor(val).detach().cpu().numpy().astype('float64')
+
+                    def c_jac_np(x_v, idx=c_idx):
+                        c_curr_all = get_current_inputs(params_in)
+                        c_curr = c_curr_all[2][idx]
+                        c_args = c_curr.get('args', ())
+                        def c_fun_pure(x_t):
+                            return tr.as_tensor(c_curr['fun'](rp.array(x_t, dtype=dt), *c_args))
+                        with tr.enable_grad():
+                            J = tr.autograd.functional.jacobian(c_fun_pure, tr.tensor(x_v, dtype=dt))
+                        return J.detach().cpu().numpy().astype('float64')
+
+                    so_cons.append({'type': c['type'], 'fun': c_np, 'jac': c_jac_np})
 
                 curr_bounds = curr_all[1]
-                res = so.minimize(fun_np, tr.as_tensor(x0_in).detach().cpu().numpy(), method=method, bounds=curr_bounds, constraints=so_cons, tol=tol, options=options)
+                res = so.minimize(
+                    fun_np, 
+                    tr.as_tensor(x0_in).detach().cpu().numpy().astype('float64'), # Cast initial guess
+                    method=method, 
+                    jac=jac_np,          
+                    bounds=curr_bounds, 
+                    constraints=so_cons, 
+                    tol=tol, 
+                    options=options
+                )
                 x_sol = tr.as_tensor(res.x, dtype=dt)
                 
                 # Identify Active Constraints and Multipliers
@@ -139,11 +167,9 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                     return _replace_tensors(all_inputs, p_in, {'idx': 0})
 
                 with tr.enable_grad():
-                    # Re-enable gradients for params_in to allow VJP computation
                     diff_params = [p.detach().requires_grad_(True) for p in params_in]
                     x = x_sol.detach().requires_grad_(True)
                     
-                    # Compute Lagrangian and its gradient w.r.t x
                     def eval_lagrangian(x_v, p_v):
                          curr_args, curr_bounds, curr_cons_list = get_inputs(p_v)
                          f_v = fun(rp.array(x_v, dtype=dt), *curr_args)
@@ -156,16 +182,11 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                               L_val = L_val - active_multipliers[m_idx] * tr.as_tensor(cv).sum()
                          
                          for b_i, b_v, b_d in active_bounds:
-                              # Multiplier for bounds (estimated as 1.0 if not available)
                               m_b = active_multipliers[len(active_cons_indices) + active_bounds.index((b_i, b_v, b_d))] if len(active_multipliers) > len(active_cons_indices) else 1.0
                               if b_d == -1.0: L_val = L_val - m_b * (x_v[b_i] - b_v)
                               else: L_val = L_val - m_b * (b_v - x_v[b_i])
                          return L_val
 
-                    # lagrangian = eval_lagrangian(x, diff_params)
-                    # tr.autograd.grad(lagrangian, x, create_graph=True)[0]
-                    
-                    # c_active(x, p) for the KKT system
                     c_active_vals = []
                     curr_args, curr_bounds, curr_cons_list = get_inputs(diff_params)
                     for c_idx in active_cons_indices:
@@ -177,13 +198,10 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                         if b_d == -1.0: c_active_vals.append(x[b_i] - b_v)
                         else: c_active_vals.append(b_v - x[b_i])
 
-                    # 2. Form KKT Matrix components
-                    # H = \nabla_xx L
                     def grad_L_x_pure_x(x_v):
                          return tr.autograd.grad(eval_lagrangian(x_v, diff_params), x_v, create_graph=True)[0]
                     H = tr.autograd.functional.jacobian(grad_L_x_pure_x, x)
                     
-                    # A = \nabla_x c_active
                     if len(c_active_vals) > 0:
                         def c_stack_pure_x(x_v):
                              ga, gb, gc_list = get_inputs(diff_params)
@@ -200,7 +218,6 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                     else:
                         A = tr.zeros((0, x.shape[0]), dtype=dt)
 
-                # Solve KKT adjoint: [H A^T; A 0] [v_x; v_lam] = [grad_x; 0]
                 n_x, n_c = x.shape[0], A.shape[0]
                 KKT = tr.zeros((n_x + n_c, n_x + n_c), dtype=dt)
                 KKT[:n_x, :n_x] = H.detach()
@@ -224,21 +241,12 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
 
                 if params_req_grad:
                     with tr.enable_grad():
-                        # Fresh diff_params that require grad
                         dp = [p.detach().requires_grad_(p.requires_grad) for p in params_in]
-                        x_star = x_sol.detach().requires_grad_(True)  # need grad for d L/dx
-
-                        # Lagrangian(x*, dp) -- both x and dp participate in graph
+                        x_star = x_sol.detach().requires_grad_(True)
                         L_xp = eval_lagrangian(x_star, dp)
-
-                        # grad_L_x evaluated at (x*, dp) -- function of dp through L_xp
                         gL_x = tr.autograd.grad(L_xp, x_star, create_graph=True)[0]
-                        # gL_x depends on dp through eval_lagrangian → create_graph=True keeps the graph
-
-                        # Sensitivity scalar:  v_x . gL_x(x*, p)
                         sensitivity = (v_x * gL_x).sum()
 
-                        # Add: v_lam . c_active(x*, p)  -- constraints depend on dp
                         if v_lam.numel() > 0:
                             _, _, c_list_dp = get_inputs(dp)
                             for m_i, c_idx in enumerate(active_cons_indices):
@@ -256,7 +264,6 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                                 grad_params[i] = -g if g is not None else tr.zeros_like(params_in[i])
                                 j += 1
                         elif dp_req:
-                            # sensitivity has no graph -- function truly independent of params
                             for i in params_indices:
                                 grad_params[i] = tr.zeros_like(params_in[i])
 
@@ -266,7 +273,14 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
         
         def fun_np_meta(x_v):
              res_val = fun(rp.array(x_v, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
-             return tr.as_tensor(res_val).detach().cpu().numpy()
+             return tr.as_tensor(res_val).detach().cpu().numpy().astype('float64')
+             
+        def jac_np_meta(x_v):
+             with tr.enable_grad():
+                 x_tr = tr.tensor(x_v, dtype=dt, requires_grad=True)
+                 obj_val = tr.as_tensor(fun(rp.array(x_tr, dtype=dt), *_replace_tensors(args, params, {'idx': 0})))
+                 grad = tr.autograd.grad(obj_val, x_tr)[0]
+             return grad.detach().cpu().numpy().astype('float64')
         
         # Metadata retrieval
         meta_cons = []
@@ -278,10 +292,30 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                   m_c = m_curr_all[2][idx]
                   m_a = m_c.get('args', ())
                   val = m_c['fun'](rp.array(x_v, dtype=dt), *m_a)
-                  return tr.as_tensor(val).detach().cpu().numpy()
-             meta_cons.append({'type': c['type'], 'fun': c_meta_np})
+                  return tr.as_tensor(val).detach().cpu().numpy().astype('float64')
+                  
+             def c_meta_jac_np(x_v, idx=c_idx):
+                  m_curr_all = _replace_tensors(all_inputs, params, {'idx': 0})
+                  m_c = m_curr_all[2][idx]
+                  m_a = m_c.get('args', ())
+                  def c_fun_pure(x_t):
+                      return tr.as_tensor(m_c['fun'](rp.array(x_t, dtype=dt), *m_a))
+                  with tr.enable_grad():
+                      J = tr.autograd.functional.jacobian(c_fun_pure, tr.tensor(x_v, dtype=dt))
+                  return J.detach().cpu().numpy().astype('float64')
+                  
+             meta_cons.append({'type': c['type'], 'fun': c_meta_np, 'jac': c_meta_jac_np})
              
-        res = so.minimize(fun_np_meta, tr.as_tensor(x0).detach().cpu().numpy(), method=method, bounds=curr_all_meta[1], constraints=meta_cons, tol=tol, options=options)
+        res = so.minimize(
+            fun_np_meta, 
+            tr.as_tensor(x0).detach().cpu().numpy().astype('float64'), # Cast initial guess
+            method=method, 
+            jac=jac_np_meta,      
+            bounds=curr_all_meta[1], 
+            constraints=meta_cons, 
+            tol=tol, 
+            options=options
+        )
         res = _convert_optimize_result(res)
         res.x = rp.array(res_x, dtype=dt)
         return res
