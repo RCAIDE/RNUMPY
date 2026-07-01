@@ -1542,7 +1542,7 @@ def genfromtxt(): raise NotImplementedError
 def fromregex(): raise NotImplementedError
 
 
-def fromstring(string, dtype=float, count=-1, *, sep):
+def fromstring(string, dtype=None, count=-1, *, sep):
     if rp.use_jax:
         return jnp.fromstring(string, dtype=dtype, count=-1, sep=sep)
     elif rp.use_torch:
@@ -1682,7 +1682,7 @@ def piecewise(x, condlist, funclist, *args, **kw):
         return NumpyArray(np.piecewise(x, condlist, funclist, *args, **kw))
 
 
-def empty(shape, dtype=float, *, device=None):
+def empty(shape, dtype=None, *, device=None):
     if rp.use_jax:
         return jnp.empty(shape, dtype=dtype, device=device)
     elif rp.use_torch:
@@ -1702,7 +1702,7 @@ def empty_like(prototype, dtype=None, shape=None, *, device=None):
         return NumpyArray(np.empty_like(prototype, dtype=dtype, shape=shape, device=device))
 
 
-def eye(N, M=None, k=0, dtype=float, *, device=None):
+def eye(N, M=None, k=0, dtype=None, *, device=None):
     if rp.use_jax:
         return jnp.eye(N, M=M, k=k, dtype=dtype, device=device)
     elif rp.use_torch:
@@ -1863,7 +1863,7 @@ def copy(a, order='K'):
         return NumpyArray(np.copy(a, order=order))
 
 
-def frombuffer(buffer, dtype=float, count=-1, offset=0):
+def frombuffer(buffer, dtype=None, count=-1, offset=0):
     if rp.use_jax:
         return jnp.frombuffer(buffer, dtype=dtype, count=count, offset=offset)
     elif rp.use_torch:
@@ -1885,7 +1885,7 @@ def from_dlpack(x, /, *, device=None, copy=None):
 def fromfile(): raise NotImplementedError
 
 
-def fromfunction(function, shape, *, dtype=float, **kwargs):
+def fromfunction(function, shape, *, dtype=None, **kwargs):
     if rp.use_jax:
         return jnp.fromfunction(function, shape, dtype=dtype, **kwargs)
     elif rp.use_torch:
@@ -1993,7 +1993,7 @@ def diagflat(v, k=0):
         return NumpyArray(np.diagflat(v, k=k))
 
 
-def tri(N, M=None, k=0, dtype=float):
+def tri(N, M=None, k=0, dtype=None):
     if rp.use_jax:
         return jnp.tri(N, M=M, k=k, dtype=dtype)
     elif rp.use_torch:

@@ -60,50 +60,55 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
         class Minimize(tr.autograd.Function):
             @staticmethod
             def forward(ctx, x0_in, *params_in):
+
+                # Sever the trailing graph for the inner solver loop
+                detached_params_in = [p.detach() if hasattr(p, 'detach') else p for p in params_in]
+                
                 def get_current_inputs(p_in):
                     return _replace_tensors(all_inputs, p_in, {'idx': 0})
                 
                 def fun_np(x_val):
-                    curr_args, curr_bounds, curr_cons = get_current_inputs(params_in)
-                    res_val = fun(rp.array(x_val, dtype=dt), *curr_args)
-                    return tr.as_tensor(res_val).detach().cpu().numpy().astype('float64')
+                    curr_args, curr_bounds, curr_cons = get_current_inputs(detached_params_in)
+                    with tr.no_grad(): # Kills the trailing graph during line search
+                        res_val = fun(rp.array(x_val, dtype=dt), *curr_args)
+                    return tr.as_tensor(res_val).detach().cpu().numpy()
 
                 def jac_np(x_val):
-                    curr_args, _, _ = get_current_inputs(params_in)
+                    curr_args, _, _ = get_current_inputs(detached_params_in)
                     with tr.enable_grad():
                         x_tr = tr.tensor(x_val, dtype=dt, requires_grad=True)
                         obj_val = tr.as_tensor(fun(rp.array(x_tr, dtype=dt), *curr_args))
                         grad = tr.autograd.grad(obj_val, x_tr)[0]
-                    return grad.detach().cpu().numpy().astype('float64')
+                    return grad.detach().cpu().numpy()
 
                 so_cons = []
-                curr_all = get_current_inputs(params_in)
+                curr_all = get_current_inputs(detached_params_in)
                 curr_cons_list = curr_all[2]
                 
                 for c_idx, c in enumerate(curr_cons_list):
                     def c_np(x_v, idx=c_idx):
-                        c_curr_all = get_current_inputs(params_in)
+                        c_curr_all = get_current_inputs(detached_params_in)
                         c_curr = c_curr_all[2][idx]
                         c_args = c_curr.get('args', ())
-                        val = c_curr['fun'](rp.array(x_v, dtype=dt), *c_args)
-                        return tr.as_tensor(val).detach().cpu().numpy().astype('float64')
-
+                        with tr.no_grad(): # Kills the trailing graph during line search
+                            val = c_curr['fun'](rp.array(x_v, dtype=dt), *c_args)
+                        return tr.as_tensor(val).detach().cpu().numpy()
                     def c_jac_np(x_v, idx=c_idx):
-                        c_curr_all = get_current_inputs(params_in)
+                        c_curr_all = get_current_inputs(detached_params_in)
                         c_curr = c_curr_all[2][idx]
                         c_args = c_curr.get('args', ())
                         def c_fun_pure(x_t):
                             return tr.as_tensor(c_curr['fun'](rp.array(x_t, dtype=dt), *c_args))
                         with tr.enable_grad():
                             J = tr.autograd.functional.jacobian(c_fun_pure, tr.tensor(x_v, dtype=dt))
-                        return J.detach().cpu().numpy().astype('float64')
+                        return J.detach().cpu().numpy()
 
                     so_cons.append({'type': c['type'], 'fun': c_np, 'jac': c_jac_np})
 
                 curr_bounds = curr_all[1]
                 res = so.minimize(
                     fun_np, 
-                    tr.as_tensor(x0_in).detach().cpu().numpy().astype('float64'), # Cast initial guess
+                    tr.as_tensor(x0_in).detach().cpu().numpy(),
                     method=method, 
                     jac=jac_np,          
                     bounds=curr_bounds, 
@@ -270,10 +275,14 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                 return (None, *grad_params)
 
         res_x = Minimize.apply(x0, *params)
+
+        # Sever trailing graph for the metadata run
+        params = [p.detach() if hasattr(p, 'detach') else p for p in params]
         
         def fun_np_meta(x_v):
-             res_val = fun(rp.array(x_v, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
-             return tr.as_tensor(res_val).detach().cpu().numpy().astype('float64')
+             with tr.no_grad(): # Kills the trailing graph during metadata retrieval
+                 res_val = fun(rp.array(x_v, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
+             return tr.as_tensor(res_val).detach().cpu().numpy()
              
         def jac_np_meta(x_v):
              with tr.enable_grad():
@@ -291,8 +300,9 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                   m_curr_all = _replace_tensors(all_inputs, params, {'idx': 0})
                   m_c = m_curr_all[2][idx]
                   m_a = m_c.get('args', ())
-                  val = m_c['fun'](rp.array(x_v, dtype=dt), *m_a)
-                  return tr.as_tensor(val).detach().cpu().numpy().astype('float64')
+                  with tr.no_grad(): # Kills the trailing graph during metadata retrieval
+                      val = m_c['fun'](rp.array(x_v, dtype=dt), *m_a)
+                  return tr.as_tensor(val).detach().cpu().numpy()
                   
              def c_meta_jac_np(x_v, idx=c_idx):
                   m_curr_all = _replace_tensors(all_inputs, params, {'idx': 0})
