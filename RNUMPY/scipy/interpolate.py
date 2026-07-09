@@ -223,7 +223,7 @@ def _torch_bspline_basis(x_eval, t, k):
         B = term1 + term2
 
     is_right_boundary = (x_eval == t[-1]).squeeze(0)
-    B[-1, is_right_boundary] = 1.0
+    B = B.at[-1, is_right_boundary].set(1.0)
     
     return B.T
 
