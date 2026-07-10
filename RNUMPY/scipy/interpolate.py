@@ -221,7 +221,7 @@ def _torch_bspline_basis(x_eval, t, k):
 
         B = term1 + term2
 
-    boundary_mask = (x_eval == t[-1])  # shape (1, n_eval)
+    boundary_mask = (x_eval >= t[-1])  # shape (1, n_eval)
     n_basis = B.shape[0]
     is_last_row = (
         tr.arange(n_basis, device=B.device) == n_basis - 1
