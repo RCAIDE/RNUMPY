@@ -197,34 +197,38 @@ def interp1d(x, y, kind='linear', axis=-1, copy=True, bounds_error=None, fill_va
 def _torch_bspline_basis(x_eval, t, k):
     x_eval = x_eval.unsqueeze(0)
     t_view = t.unsqueeze(1)
-    
     B = ((t_view[:-1] <= x_eval) & (x_eval < t_view[1:])).to(x_eval.dtype)
-    
+
     for d in range(1, k + 1):
         # Basis of degree d depends on knots t[i], t[i+d], t[i+1], t[i+d+1]
         # and basis of degree d-1
-        t_i = t[:-d-1]
+        t_i = t[:-d - 1]
         t_id = t[d:-1]
         t_i1 = t[1:-d]
-        t_id1 = t[d+1:]
-        
+        t_id1 = t[d + 1:]
+
         denom1 = t_id - t_i
         mask1 = denom1 > 0
         denom1_safe = tr.where(mask1, denom1, tr.ones_like(denom1))
         T1 = ((x_eval - t_i.unsqueeze(1)) / denom1_safe.unsqueeze(1)) * B[:-1]
         term1 = tr.where(mask1.unsqueeze(1), T1, tr.zeros_like(T1))
-        
+
         denom2 = t_id1 - t_i1
         mask2 = denom2 > 0
         denom2_safe = tr.where(mask2, denom2, tr.ones_like(denom2))
         T2 = ((t_id1.unsqueeze(1) - x_eval) / denom2_safe.unsqueeze(1)) * B[1:]
         term2 = tr.where(mask2.unsqueeze(1), T2, tr.zeros_like(T2))
-        
+
         B = term1 + term2
 
-    is_right_boundary = (x_eval == t[-1]).squeeze(0)
-    B = B.at[-1, is_right_boundary].set(1.0)
-    
+    boundary_mask = (x_eval == t[-1])  # shape (1, n_eval)
+    n_basis = B.shape[0]
+    is_last_row = (
+        tr.arange(n_basis, device=B.device) == n_basis - 1
+    ).unsqueeze(1)  # shape (n_basis, 1)
+    correction = boundary_mask & is_last_row  # broadcasts to (n_basis, n_eval)
+    B = tr.where(correction, tr.ones_like(B), B)
+
     return B.T
 
 def _jax_bspline_basis(x_eval, t, k):
