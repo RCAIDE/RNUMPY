@@ -1259,6 +1259,7 @@ def clip(arr=None, /, min=None, max=None, ):
     if rp.use_jax:
         return jnp.clip(arr, min=min, max=max)
     elif rp.use_torch:
+        arr = tr.as_tensor(arr) if not isinstance(arr, tr.Tensor) else arr
         return TorchArray(tr.clamp(arr, min=min, max=max))
     else:
         return NumpyArray(np.clip(a=arr, a_min=min, a_max=max))

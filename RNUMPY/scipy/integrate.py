@@ -19,6 +19,30 @@ ji  = j.scipy.integrate if j else None
 si  = sp.integrate if sp is not None else None
 # ti  = tr.integrate if tr else None
 
+def _jax_cumulative_trapezoid(y, x=None, dx=1.0, axis=-1, initial=None):
+    """JAX implementation matching scipy.integrate.cumulative_trapezoid."""
+    y = jnp.asarray(y)
+    ndim = y.ndim
+    axis = axis if axis >= 0 else ndim + axis
+    y_m = jnp.moveaxis(y, axis, -1)
+
+    if x is not None:
+        x_m = jnp.moveaxis(jnp.asarray(x), axis, -1)
+        dt = x_m[..., 1:] - x_m[..., :-1]
+    else:
+        dt = dx
+
+    areas = 0.5 * (y_m[..., 1:] + y_m[..., :-1]) * dt
+    cum = jnp.cumsum(areas, axis=-1)
+    out = jnp.moveaxis(cum, -1, axis)
+
+    if initial is not None:
+        init_shape = list(out.shape)
+        init_shape[axis] = 1
+        init_arr = jnp.full(init_shape, initial, dtype=out.dtype)
+        out = jnp.concatenate([init_arr, out], axis=axis)
+    return out
+
 def trapezoid(y, x=None, dx=1.0, axis=-1): 
     if rp.use_jax: return jnp.trapezoid(y=y, x=x, dx=dx, axis=axis)
     elif rp.use_torch:
@@ -32,8 +56,7 @@ def trapezoid(y, x=None, dx=1.0, axis=-1):
 
 def cumulative_trapezoid(y, x=None, dx=1.0, axis=-1, initial=None):
     if rp.use_jax:
-        import jax.scipy.integrate as jsi
-        return jsi.cumulative_trapezoid(y, x=x, dx=dx, axis=axis, initial=initial)
+        return _jax_cumulative_trapezoid(y, x=x, dx=dx, axis=axis, initial=initial)
     elif rp.use_torch:
         y_t = tr.as_tensor(y)
         if x is not None:

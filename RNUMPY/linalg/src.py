@@ -64,7 +64,9 @@ def eig(a):
     elif rp.use_torch:
         vals, vecs = tr.linalg.eig(a)
         return rp.TorchArray(vals), rp.TorchArray(vecs)
-    else: return rp.NumpyArray(nl.eig(a))
+    else:
+        vals, vecs = nl.eig(a)
+        return rp.NumpyArray(vals), rp.NumpyArray(vecs)
     
 def eigh(a, UPLO=None, symmetrize_input=True):
     if rp.use_jax: return jl.eigh(a, UPLO=UPLO, symmetrize_input=symmetrize_input)

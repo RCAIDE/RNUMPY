@@ -25,6 +25,77 @@ if j is not None:
 
 so  = sp.optimize if sp is not None else None
 
+from ._numpy_bridge import finite_diff_jacobian, to_numpy
+
+_torch_aux_store = {}
+
+def _jax_concrete_args(args):
+    import jax
+    return jax.tree_util.tree_map(jax.lax.stop_gradient, args)
+
+def _torch_ift_param_grads(func, args_template, params_in, grad_x, dt, x_sol_np):
+    """Implicit-function-theorem parameter gradients via NumPy (functorch-safe)."""
+    import torch as tr
+
+    if x_sol_np is None:
+        raise RuntimeError("RNUMPY fsolve: missing concrete solution in backward context")
+
+    gx_np = to_numpy(grad_x).ravel()
+
+    def eval_f(x_v, p_values):
+        current_args = _replace_tensors(args_template, p_values, {'idx': 0})
+        return to_numpy(func(rp.array(x_v, dtype=dt), *current_args)).ravel()
+
+    jx = finite_diff_jacobian(lambda xv: eval_f(xv, params_in), x_sol_np)
+    lam = np.linalg.lstsq(jx.T, gx_np, rcond=None)[0]
+
+    grad_params = [None] * len(params_in)
+    for i, p in enumerate(params_in):
+        if not getattr(p, 'requires_grad', False):
+            continue
+        p_np = to_numpy(p).astype(float).ravel()
+
+        def eval_f_p(p_flat):
+            mp = list(params_in)
+            mp[i] = tr.as_tensor(p_flat.reshape(p.shape), dtype=p.dtype, device=p.device)
+            return eval_f(x_sol_np, mp)
+
+        jp = finite_diff_jacobian(eval_f_p, p_np)
+        grad_np = -jp.T @ lam
+        grad_params[i] = tr.as_tensor(grad_np.reshape(p.shape), dtype=p.dtype, device=p.device)
+    return grad_params
+
+def _build_fsolve_scipy_callbacks(func, args_tuple, fprime=None):
+    """Build NumPy-only fun/fprime callbacks for SciPy fsolve (no AD tracing)."""
+    concrete_args = _jax_concrete_args(args_tuple) if rp.use_jax else args_tuple
+
+    def fun_np(x_v):
+        res = func(rp.array(x_v), *concrete_args)
+        if rp.use_jax:
+            import jax
+            return to_numpy(jax.device_get(res))
+        if rp.use_torch:
+            import torch as tr
+            return to_numpy(tr.as_tensor(res).detach().cpu().numpy())
+        return to_numpy(res)
+
+    if fprime is not None:
+        def fprime_np(x_v):
+            res = fprime(rp.array(x_v), *concrete_args)
+            if rp.use_jax:
+                import jax
+                return to_numpy(jax.device_get(res))
+            if rp.use_torch:
+                import torch as tr
+                return to_numpy(tr.as_tensor(res).detach().cpu().numpy())
+            return to_numpy(res)
+        return fun_np, fprime_np
+
+    def fprime_np(x_v):
+        return finite_diff_jacobian(fun_np, x_v)
+
+    return fun_np, fprime_np
+
 # ----------------------------------------------------------------------------------------------------------------------
 #  Functions
 # ----------------------------------------------------------------------------------------------------------------------  
@@ -59,7 +130,7 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
 
         class Minimize(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, x0_in, *params_in):
+            def forward(x0_in, *params_in):
 
                 # Sever the trailing graph for the inner solver loop
                 detached_params_in = [p.detach() if hasattr(p, 'detach') else p for p in params_in]
@@ -158,9 +229,15 @@ def minimize(fun, x0, args=(), *, method='BFGS', bounds=None, constraints=(), to
                         elif u is not None and abs(res_x_np[i] - u) < 1e-7:
                             active_bounds.append((i, float(u), 1.0))
 
-                ctx.save_for_backward(x_sol, *params_in)
-                ctx.active_info = (active_cons_indices, tr.tensor(active_multipliers, dtype=dt), active_bounds)
+                ctx_active_info = (active_cons_indices, tr.tensor(active_multipliers, dtype=dt), active_bounds)
+                _torch_aux_store[id(x_sol)] = ctx_active_info
                 return x_sol
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                x0_in, *params_in = inputs
+                ctx.save_for_backward(output, *params_in)
+                ctx.active_info = _torch_aux_store.pop(id(output), ([], tr.tensor([]), []))
 
             @staticmethod
             def backward(ctx, grad_x):
@@ -542,8 +619,9 @@ def minimize_scalar(fun, bracket=None, bounds=None, args=(), method=None, tol=No
         @jax.custom_jvp
         def _jax_solve(bracket_in, bounds_in, *a_flat):
             current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
+            concrete_args = _jax_concrete_args(current_args)
             def fun_np(x_val):
-                 res = fun(rp.array(x_val), *current_args)
+                 res = fun(rp.array(x_val), *concrete_args)
                  return np.asarray(jax.device_get(res))
             
             res = so.minimize_scalar(fun_np, bracket=bracket_in, bounds=bounds_in, method=method, tol=tol, options=options)
@@ -604,19 +682,21 @@ def minimize_scalar(fun, bracket=None, bounds=None, args=(), method=None, tol=No
         
         class MinimizeScalar(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, *params_in):
-                bracket, bounds = params_in[0], params_in[1]
-                args_tensors = params_in[2:]
-                
+            def forward(bracket, bounds, *args_tensors):
                 def fun_np(x_val):
                     current_args = _replace_tensors(args, args_tensors, {'idx': 0})
                     res = fun(rp.array(x_val, dtype=dt), *current_args)
                     return tr.as_tensor(res).detach().cpu().numpy()
 
                 res = so.minimize_scalar(fun_np, bracket=bracket, bounds=bounds, method=method, tol=tol, options=options)
-                x_sol = tr.as_tensor(res.x, dtype=dt) 
-                ctx.save_for_backward(x_sol, *args_tensors)
+                x_sol = tr.as_tensor(res.x, dtype=dt)
                 return x_sol, tr.as_tensor(res.fun, dtype=dt)
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                x_sol, f_val = output
+                bracket, bounds, *args_tensors = inputs
+                ctx.save_for_backward(x_sol, *args_tensors)
 
             @staticmethod
             def backward(ctx, grad_x, grad_f):
@@ -687,8 +767,9 @@ def brentq(f, a, b, args=(), xtol=2e-12, rtol=8.881784197001252e-16, maxiter=100
         @jax.custom_jvp
         def _jax_brentq(a_in, b_in, *a_flat):
             current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
+            concrete_args = _jax_concrete_args(current_args)
             def fun_np(x_v): 
-                res = f(rp.array(x_v), *current_args)
+                res = f(rp.array(x_v), *concrete_args)
                 return np.asarray(jax.device_get(res))
             
             x_sol = so.brentq(fun_np, a_in, b_in, args=(), xtol=xtol, rtol=rtol, maxiter=maxiter, disp=disp)
@@ -731,16 +812,19 @@ def brentq(f, a, b, args=(), xtol=2e-12, rtol=8.881784197001252e-16, maxiter=100
 
         class BrentQ(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, a_in, b_in, *params_in):
+            def forward(a_in, b_in, *params_in):
                 def fun_np(x_val):
                     current_args = _replace_tensors(args, params_in, {'idx': 0})
                     res = f(rp.array(x_val, dtype=dt), *current_args)
                     return tr.as_tensor(res).detach().cpu().numpy()
 
                 x_sol = so.brentq(fun_np, a_in, b_in, args=(), xtol=xtol, rtol=rtol, maxiter=maxiter, disp=disp)
-                x_sol_t = tr.as_tensor(x_sol, dtype=dt)
-                ctx.save_for_backward(x_sol_t, *params_in)
-                return x_sol_t
+                return tr.as_tensor(x_sol, dtype=dt)
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                a_in, b_in, *params_in = inputs
+                ctx.save_for_backward(output, *params_in)
 
             @staticmethod
             def backward(ctx, grad_x):
@@ -797,8 +881,9 @@ def fminbound(func, x1, x2, args=(), xtol=1e-05, maxfun=500, full_output=0, disp
         @jax.custom_jvp
         def _jax_fminbound(x1_in, x2_in, *a_flat):
             current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
+            concrete_args = _jax_concrete_args(current_args)
             def fun_np(x_v): 
-                res = func(rp.array(x_v), *current_args)
+                res = func(rp.array(x_v), *concrete_args)
                 return np.asarray(jax.device_get(res))
             
             x_sol = so.fminbound(fun_np, x1_in, x2_in, args=(), xtol=xtol, maxfun=maxfun, disp=disp)
@@ -842,16 +927,19 @@ def fminbound(func, x1, x2, args=(), xtol=1e-05, maxfun=500, full_output=0, disp
 
         class FMinBound(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, x1_in, x2_in, *params_in):
+            def forward(x1_in, x2_in, *params_in):
                 def fun_np(x_val):
                     current_args = _replace_tensors(args, params_in, {'idx': 0})
                     res = func(rp.array(x_val, dtype=dt), *current_args)
                     return tr.as_tensor(res).detach().cpu().numpy()
 
                 x_sol = so.fminbound(fun_np, x1_in, x2_in, args=(), xtol=xtol, maxfun=maxfun, disp=disp)
-                x_sol_t = tr.as_tensor(x_sol, dtype=dt)
-                ctx.save_for_backward(x_sol_t, *params_in)
-                return x_sol_t
+                return tr.as_tensor(x_sol, dtype=dt)
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                x1_in, x2_in, *params_in = inputs
+                ctx.save_for_backward(output, *params_in)
 
             @staticmethod
             def backward(ctx, grad_x):
@@ -910,30 +998,9 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
         @jax.custom_jvp
         def _jax_fsolve(x0_in, *a_flat):
             current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
-            def fun_np(x_v): 
-                 res = func(rp.array(x_v), *current_args)
-                 return np.asarray(jax.device_get(res))
-            
-            fprime_to_use = None
-            if fprime is not None:
-                def fprime_np(x_v):
-                    res = fprime(rp.array(x_v), *current_args)
-                    return np.asarray(jax.device_get(res))
-                fprime_to_use = fprime_np
-            else:
-                def fprime_autograd_np(x_v, *args_flat):
-                    jac_fn = jax.jacobian(
-                        lambda x: func(
-                            rp.array(x), 
-                            *_replace_tensors(args, args_flat, {'idx': 0})
-                        ).ravel()
-                    )
-                    res = jac_fn(jnp.array(x_v))
-                    return res
-                fprime_to_use = fprime_autograd_np
-            
-            res = so.fsolve(fun_np, np.asarray(x0_in), args=(), fprime=fprime_to_use, full_output=True, 
-                            col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band, 
+            fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, current_args, fprime=fprime)
+            res = so.fsolve(fun_np, to_numpy(x0_in), args=(), fprime=fprime_np, full_output=True,
+                            col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band,
                             epsfcn=epsfcn, factor=factor, diag=diag)
             x_sol, infodict, ier, mesg = res
             return jnp.array(x_sol)
@@ -958,25 +1025,11 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
         
         if full_output:
             def get_metadata():
-                def fun_np_meta(x_v):
-                    res_v = func(rp.array(x_v), *jax.tree_util.tree_map(jax.lax.stop_gradient, args))
-                    return np.asarray(jax.device_get(res_v))
-                
-                fprime_to_use_meta = None
-                if fprime is not None:
-                    def fprime_np_meta(x_v):
-                        res_v = fprime(rp.array(x_v), *jax.tree_util.tree_map(jax.lax.stop_gradient, args))
-                        return np.asarray(jax.device_get(res_v))
-                    fprime_to_use_meta = fprime_np_meta
-                else:
-                    def fprime_autograd_np_meta(x_v):
-                        jac_fn = jax.jacobian(lambda x: func(rp.array(x), *jax.tree_util.tree_map(jax.lax.stop_gradient, args)).ravel())
-                        res = jac_fn(jnp.array(x_v))
-                        return np.asarray(jax.device_get(res))
-                    fprime_to_use_meta = fprime_autograd_np_meta
-
-                return so.fsolve(fun_np_meta, np.asarray(x0), args=(), fprime=fprime_to_use_meta, full_output=True, 
-                                 col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band, 
+                fun_np, fprime_np = _build_fsolve_scipy_callbacks(
+                    func, jax.tree_util.tree_map(jax.lax.stop_gradient, args), fprime=fprime
+                )
+                return so.fsolve(fun_np, to_numpy(x0), args=(), fprime=fprime_np, full_output=True,
+                                 col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band,
                                  epsfcn=epsfcn, factor=factor, diag=diag)
             
             try:
@@ -995,71 +1048,29 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
 
         class FSolve(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, x0_in, *params_in):
-                def fun_np(x_val):
-                    current_args = _replace_tensors(args, params_in, {'idx': 0})
-                    res = func(rp.array(x_val, dtype=dt), *current_args)
-                    return tr.as_tensor(res).detach().cpu().numpy()
+            def forward(x0_in, *params_in):
+                detached_params = tuple(p.detach() for p in params_in)
+                current_args = _replace_tensors(args, detached_params, {'idx': 0})
+                fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, current_args, fprime=fprime)
 
-                fprime_to_use = None
-                if fprime is not None:
-                    def fprime_np(x_val):
-                        current_args = _replace_tensors(args, params_in, {'idx': 0})
-                        res = fprime(rp.array(x_val, dtype=dt), *current_args)
-                        return tr.as_tensor(res).detach().cpu().numpy()
-                    fprime_to_use = fprime_np
-                else:
-                    def fprime_autograd_np(x_val):
-                        current_args = _replace_tensors(args, params_in, {'idx': 0})
-                        x_tr = tr.as_tensor(x_val, dtype=dt)
-                        def f_tr(x_v):
-                            return tr.as_tensor(func(rp.array(x_v, dtype=dt), *current_args)).ravel()
-                        jac = tr.autograd.functional.jacobian(f_tr, x_tr)
-                        return jac.detach().cpu().numpy()
-                    fprime_to_use = fprime_autograd_np
-
-                res = so.fsolve(fun_np, tr.as_tensor(x0_in).detach().cpu().numpy(), args=(), fprime=fprime_to_use, 
-                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, 
+                res = so.fsolve(fun_np, to_numpy(tr.as_tensor(x0_in).detach().cpu().numpy()), args=(), fprime=fprime_np,
+                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev,
                                  band=band, epsfcn=epsfcn, factor=factor, diag=diag)
                 x_sol_np, infodict, ier, mesg = res
                 x_sol = tr.as_tensor(x_sol_np, dtype=dt)
-                ctx.save_for_backward(x_sol, *params_in)
+                _torch_aux_store[id(x_sol)] = np.array(x_sol_np, copy=True)
                 return x_sol
 
             @staticmethod
+            def setup_context(ctx, inputs, output):
+                x0_in, *params_in = inputs
+                ctx.save_for_backward(*params_in)
+                ctx.x_sol_np = _torch_aux_store.pop(id(output), None)
+
+            @staticmethod
             def backward(ctx, grad_x):
-                x_sol = ctx.saved_tensors[0]
-                params_in = ctx.saved_tensors[1:]
-                
-                with tr.enable_grad():
-                    x = x_sol.detach().requires_grad_(True)
-                    current_args = _replace_tensors(args, params_in, {'idx': 0})
-                    f_val = func(rp.array(x, dtype=dt), *current_args)
-                    f_tensor = tr.as_tensor(f_val).ravel()
-                
-                def f_wrapper(x_v):
-                    return tr.as_tensor(func(rp.array(x_v, dtype=dt), *current_args)).ravel()
-                
-                Jx = tr.autograd.functional.jacobian(f_wrapper, x)
-                
-                try:
-                    lambd = tr.linalg.solve(Jx.T, grad_x.reshape(-1, 1)).reshape(-1)
-                except:
-                    lambd = tr.linalg.lstsq(Jx.T, grad_x.reshape(-1, 1)).solution.reshape(-1)
-                
-                grad_params = [None] * len(params_in)
-                params_to_diff = []
-                params_indices = []
-                for i, p in enumerate(params_in):
-                    if p.requires_grad:
-                        params_to_diff.append(p)
-                        params_indices.append(i)
-                
-                if params_to_diff:
-                    vjp_params = tr.autograd.grad(f_tensor, params_to_diff, grad_outputs=-lambd, allow_unused=True)
-                    for i, g in zip(params_indices, vjp_params):
-                        grad_params[i] = g
-                
+                params_in = ctx.saved_tensors
+                grad_params = _torch_ift_param_grads(func, args, params_in, grad_x, dt, ctx.x_sol_np)
                 return (None, *grad_params)
 
         params = _find_tensors(args)
@@ -1067,28 +1078,10 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
         
         if full_output:
             def get_metadata():
-                def fun_np_meta(x_val):
-                    res = func(rp.array(x_val, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
-                    return tr.as_tensor(res).detach().cpu().numpy()
-                
-                fprime_to_use_meta = None
-                if fprime is not None:
-                    def fprime_np_meta(x_val):
-                        res = fprime(rp.array(x_val, dtype=dt), *_replace_tensors(args, params, {'idx': 0}))
-                        return tr.as_tensor(res).detach().cpu().numpy()
-                    fprime_to_use_meta = fprime_np_meta
-                else:
-                    def fprime_autograd_np_meta(x_val):
-                        m_args = _replace_tensors(args, params, {'idx': 0})
-                        x_tr = tr.as_tensor(x_val, dtype=dt)
-                        def f_tr(x_v):
-                            return tr.as_tensor(func(rp.array(x_v, dtype=dt), *m_args)).ravel()
-                        jac = tr.autograd.functional.jacobian(f_tr, x_tr)
-                        return jac.detach().cpu().numpy()
-                    fprime_to_use_meta = fprime_autograd_np_meta
-
-                return so.fsolve(fun_np_meta, tr.as_tensor(x0).detach().cpu().numpy(), args=(), fprime=fprime_to_use_meta, 
-                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, 
+                current_args = _replace_tensors(args, [p.detach() for p in params], {'idx': 0})
+                fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, current_args, fprime=fprime)
+                return so.fsolve(fun_np, to_numpy(tr.as_tensor(x0).detach().cpu().numpy()), args=(), fprime=fprime_np,
+                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev,
                                  band=band, epsfcn=epsfcn, factor=factor, diag=diag)
             
             xs, infodict, ier, mesg = get_metadata()
@@ -1097,8 +1090,9 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
             return rp.array(x_sol, dtype=dt)
     
     else:
-        res = so.fsolve(func, x0, args=args, fprime=fprime, full_output=full_output, 
-                         col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band, 
+        fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, args, fprime=fprime)
+        res = so.fsolve(fun_np, to_numpy(x0), args=(), fprime=fprime_np, full_output=full_output,
+                         col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band,
                          epsfcn=epsfcn, factor=factor, diag=diag)
         if full_output:
             x, infodict, ier, mesg = res
@@ -1118,8 +1112,9 @@ def root(fun, x0, args=(), method='hybr', jac=None, tol=None, callback=None, opt
         @jax.custom_jvp
         def _jax_root(x0_in, *a_flat):
             current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
+            concrete_args = _jax_concrete_args(current_args)
             def fun_np(x_v): 
-                 res = fun(rp.array(x_v), *current_args)
+                 res = fun(rp.array(x_v), *concrete_args)
                  return np.asarray(jax.device_get(res))
             
             res = so.root(fun_np, np.asarray(x0_in), method=method, tol=tol, callback=callback, options=options)
@@ -1169,52 +1164,27 @@ def root(fun, x0, args=(), method='hybr', jac=None, tol=None, callback=None, opt
 
         class Root(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, x0_in, *params_in):
+            def forward(x0_in, *params_in):
                 def fun_np(x_val):
                     current_args = _replace_tensors(args, params_in, {'idx': 0})
                     res = fun(rp.array(x_val, dtype=dt), *current_args)
                     return tr.as_tensor(res).detach().cpu().numpy()
 
-                res = so.root(fun_np, tr.as_tensor(x0_in).detach().cpu().numpy(), method=method, tol=tol, callback=callback, options=options)
+                res = so.root(fun_np, to_numpy(tr.as_tensor(x0_in).detach().cpu().numpy()), method=method, tol=tol, callback=callback, options=options)
                 x_sol = tr.as_tensor(res.x, dtype=dt)
-                ctx.save_for_backward(x_sol, *params_in)
+                _torch_aux_store[id(x_sol)] = np.array(res.x, copy=True)
                 return x_sol
 
             @staticmethod
+            def setup_context(ctx, inputs, output):
+                x0_in, *params_in = inputs
+                ctx.save_for_backward(*params_in)
+                ctx.x_sol_np = _torch_aux_store.pop(id(output), None)
+
+            @staticmethod
             def backward(ctx, grad_x):
-                x_sol = ctx.saved_tensors[0]
-                params_in = ctx.saved_tensors[1:]
-                
-                with tr.enable_grad():
-                    x = x_sol.detach().requires_grad_(True)
-                    current_args = _replace_tensors(args, params_in, {'idx': 0})
-                    f_val = fun(rp.array(x, dtype=dt), *current_args)
-                    f_tensor = tr.as_tensor(f_val).ravel()
-                
-                def f_wrapper(x_v):
-                    return tr.as_tensor(fun(rp.array(x_v, dtype=dt), *current_args)).ravel()
-                
-                Jx = tr.autograd.functional.jacobian(f_wrapper, x)
-                
-                # Solve Jx.T * lambda = grad_x
-                try:
-                    lambd = tr.linalg.solve(Jx.T, grad_x.reshape(-1, 1)).reshape(-1)
-                except:
-                    lambd = tr.linalg.lstsq(Jx.T, grad_x.reshape(-1, 1)).solution.reshape(-1)
-                
-                grad_params = [None] * len(params_in)
-                params_to_diff = []
-                params_indices = []
-                for i, p in enumerate(params_in):
-                    if p.requires_grad:
-                        params_to_diff.append(p)
-                        params_indices.append(i)
-                
-                if params_to_diff:
-                    vjp_params = tr.autograd.grad(f_tensor, params_to_diff, grad_outputs=-lambd, allow_unused=True)
-                    for i, g in zip(params_indices, vjp_params):
-                        grad_params[i] = g
-                
+                params_in = ctx.saved_tensors
+                grad_params = _torch_ift_param_grads(fun, args, params_in, grad_x, dt, ctx.x_sol_np)
                 return (None, *grad_params)
 
         params = _find_tensors(args)

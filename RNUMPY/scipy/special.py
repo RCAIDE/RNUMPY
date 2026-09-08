@@ -153,12 +153,16 @@ def jv(v, z):
     elif rp.use_torch:
         class JV(tr.autograd.Function):
             @staticmethod
-            def forward(ctx, v, z):
+            def forward(v, z):
                 v_np   = v.detach().cpu().numpy()
                 z_np   = z.detach().cpu().numpy()
                 res_np = ss.jv(v_np, z_np)
-                ctx.save_for_backward(v, z)
                 return tr.as_tensor(res_np, dtype=z.dtype, device=z.device)
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                v, z = inputs
+                ctx.save_for_backward(v, z)
 
             @staticmethod
             def backward(ctx, grad_output):

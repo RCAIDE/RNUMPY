@@ -21,10 +21,60 @@ def _to_array(x):
 def _ensure_backend_args(args):
     return tuple(_to_array(arg) for arg in args)
 
+def _torch_collect_argnums(argnums):
+    if isinstance(argnums, int):
+        return [argnums]
+    return list(argnums)
+
+def _torch_prepare_args(args, argnums):
+    import torch
+
+    args = list(args)
+    diff_indices = _torch_collect_argnums(argnums)
+    tracked = []
+    for i in diff_indices:
+        a = args[i]
+        if isinstance(a, torch.Tensor):
+            if not a.requires_grad:
+                a = a.detach().requires_grad_(True)
+                args[i] = a
+            tracked.append(a)
+    return args, tracked, diff_indices
+
+def _torch_scalarize(val):
+    import torch
+    if isinstance(val, torch.Tensor) and val.ndim > 0:
+        return val.sum()
+    return val
+
+def _torch_grad_impl(f, argnums, args, kwargs):
+    import torch
+
+    args, tracked, diff_indices = _torch_prepare_args(args, argnums)
+    if not tracked:
+        raise ValueError("No torch.Tensor arguments selected for differentiation.")
+    val = _torch_scalarize(f(*args, **kwargs))
+    grads = torch.autograd.grad(val, tracked, allow_unused=True)
+    if isinstance(argnums, int):
+        return grads[0]
+    return tuple(grads)
+
+def _torch_value_and_grad_impl(f, argnums, args, kwargs):
+    import torch
+
+    args, tracked, diff_indices = _torch_prepare_args(args, argnums)
+    if not tracked:
+        raise ValueError("No torch.Tensor arguments selected for differentiation.")
+    val = f(*args, **kwargs)
+    loss = _torch_scalarize(val)
+    grads = torch.autograd.grad(loss, tracked, allow_unused=True)
+    if isinstance(argnums, int):
+        return val, grads[0]
+    return val, tuple(grads)
+
 def _finite_diff_grad(f, argnums, args, kwargs, eps=1e-6):
-    # args is a tuple of all arguments to f
-    # argnums is int or tuple of ints
-    
+    import numpy as np
+
     if isinstance(argnums, int):
         target_indices = [argnums]
         single_arg = True
@@ -34,41 +84,38 @@ def _finite_diff_grad(f, argnums, args, kwargs, eps=1e-6):
 
     grads = []
     for arg_idx in target_indices:
-        x = _to_array(args[arg_idx])
-        g = rp.zeros_like(x)
-        
-        # Flatten for iteration
+        x = np.asarray(_to_array(args[arg_idx]), dtype=float).copy()
+        g = np.zeros_like(x)
+
         x_flat = x.ravel()
         g_flat = g.ravel()
-        
+
         for i in range(x_flat.size):
-            orig_val = x_flat[i].item()
-            
-            # Forward
-            x_flat[i] = orig_val + eps
+            orig_val = x_flat[i]
+
+            xp = x_flat.copy()
+            xp[i] = orig_val + eps
             args_plus = list(args)
-            args_plus[arg_idx] = x.reshape(x.shape)
+            args_plus[arg_idx] = rp.array(xp.reshape(x.shape))
             y_plus = f(*args_plus, **kwargs)
-            
-            # Backward
-            x_flat[i] = orig_val - eps
+
+            xm = x_flat.copy()
+            xm[i] = orig_val - eps
             args_minus = list(args)
-            args_minus[arg_idx] = x.reshape(x.shape)
+            args_minus[arg_idx] = rp.array(xm.reshape(x.shape))
             y_minus = f(*args_minus, **kwargs)
-            
-            # Central difference
-            g_flat[i] = (y_plus - y_minus) / (2 * eps)
-            
-            # Reset
-            x_flat[i] = orig_val
-            
-        grads.append(g)
-    
+
+            g_flat[i] = (np.asarray(y_plus) - np.asarray(y_minus)) / (2 * eps)
+
+        grads.append(rp.array(g.reshape(x.shape)))
+
     if single_arg:
         return grads[0]
     return tuple(grads)
 
 def _finite_diff_jac(f, argnums, args, kwargs, eps=1e-6):
+    import numpy as np
+
     if isinstance(argnums, int):
         target_indices = [argnums]
         single_arg = True
@@ -78,35 +125,34 @@ def _finite_diff_jac(f, argnums, args, kwargs, eps=1e-6):
 
     jacs = []
     for arg_idx in target_indices:
-        x = _to_array(args[arg_idx])
+        x = np.asarray(_to_array(args[arg_idx]), dtype=float).copy()
         y0 = f(*args, **kwargs)
-        y0_flat = _to_array(y0).ravel()
-        
-        jac = rp.zeros((y0_flat.size, x.size))
-        
+        y0_flat = np.asarray(y0).ravel()
+
+        jac = np.zeros((y0_flat.size, x.size))
         x_flat = x.ravel()
+
         for i in range(x_flat.size):
-            orig_val = x_flat[i].item()
-            
-            x_flat[i] = orig_val + eps
+            orig_val = x_flat[i]
+
+            xp = x_flat.copy()
+            xp[i] = orig_val + eps
             args_plus = list(args)
-            args_plus[arg_idx] = x.reshape(x.shape)
-            y_plus = _to_array(f(*args_plus, **kwargs)).ravel()
-            
-            x_flat[i] = orig_val - eps
+            args_plus[arg_idx] = rp.array(xp.reshape(x.shape))
+            y_plus = np.asarray(f(*args_plus, **kwargs)).ravel()
+
+            xm = x_flat.copy()
+            xm[i] = orig_val - eps
             args_minus = list(args)
-            args_minus[arg_idx] = x.reshape(x.shape)
-            y_minus = _to_array(f(*args_minus, **kwargs)).ravel()
-            
+            args_minus[arg_idx] = rp.array(xm.reshape(x.shape))
+            y_minus = np.asarray(f(*args_minus, **kwargs)).ravel()
+
             jac[:, i] = (y_plus - y_minus) / (2 * eps)
-            
-            x_flat[i] = orig_val
-            
-        # Reshape jacobian to (y_shape, x_shape)
-        y_shape = _to_array(y0).shape
+
+        y_shape = np.asarray(y0).shape
         x_shape = x.shape
         full_jac_shape = y_shape + x_shape
-        jacs.append(jac.reshape(full_jac_shape))
+        jacs.append(rp.array(jac.reshape(full_jac_shape)))
 
     if single_arg:
         return jacs[0]
@@ -120,13 +166,9 @@ def grad(f, argnums=0, has_aux=False):
             import jax
             return jax.grad(f, argnums=argnums, has_aux=has_aux)(*args, **kwargs)
         elif rp.use_torch:
-            try:
-                from torch.func import grad as tgrad
-                return tgrad(f, argnums=argnums, has_aux=has_aux)(*args, **kwargs)
-            except ImportError:
-                # Fallback to autograd.grad if torch.func is missing (older torch)
-                # This fallback is limited and might not support argnums/has_aux as well as torch.func
-                raise ImportError("torch.func is required for RNUMPY.grad in Torch mode. Please upgrade PyTorch.")
+            if has_aux:
+                raise NotImplementedError("has_aux=True is not supported in Torch mode for RNUMPY.grad yet.")
+            return _torch_grad_impl(f, argnums, args, kwargs)
         else:
             if has_aux:
                 raise NotImplementedError("has_aux=True is not supported in NumPy finite difference mode.")
@@ -140,12 +182,9 @@ def value_and_grad(f, argnums=0, has_aux=False):
             import jax
             return jax.value_and_grad(f, argnums=argnums, has_aux=has_aux)(*args, **kwargs)
         elif rp.use_torch:
-            try:
-                from torch.func import grad_and_value as tgrad_and_value
-                g, v = tgrad_and_value(f, argnums=argnums, has_aux=has_aux)(*args, **kwargs)
-                return v, g
-            except ImportError:
-                raise ImportError("torch.func.grad_and_value is required for RNUMPY.value_and_grad in Torch mode.")
+            if has_aux:
+                raise NotImplementedError("has_aux=True is not supported in Torch mode for RNUMPY.value_and_grad yet.")
+            return _torch_value_and_grad_impl(f, argnums, args, kwargs)
         else:
             if has_aux:
                 raise NotImplementedError("has_aux=True is not supported in NumPy finite difference mode.")
