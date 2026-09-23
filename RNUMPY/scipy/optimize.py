@@ -28,72 +28,192 @@ so  = sp.optimize if sp is not None else None
 from ._numpy_bridge import finite_diff_jacobian, to_numpy
 
 _torch_aux_store = {}
+_MISSING = object()
 
 def _jax_concrete_args(args):
     import jax
     return jax.tree_util.tree_map(jax.lax.stop_gradient, args)
 
-def _torch_ift_param_grads(func, args_template, params_in, grad_x, dt, x_sol_np):
-    """Implicit-function-theorem parameter gradients via NumPy (functorch-safe)."""
+def _detach_torch_args(args_tuple):
+    found = _find_tensors(args_tuple)
+    if not found:
+        return args_tuple
+    return _replace_tensors(args_tuple, [p.detach() for p in found], {'idx': 0})
+
+def _as_1d_numpy(x):
+    """Flatten a real-valued array-like to a 1-D NumPy vector for SciPy.
+
+    Complex residuals are not supported: SciPy ``hybrj`` and this wrapper
+    operate in real floating point.
+    """
+    return np.asarray(to_numpy(x), dtype=float).reshape(-1)
+
+
+def _require_fsolve_info(meta, backend):
+    info = meta.get("info")
+    if info is None:
+        raise RuntimeError(
+            f"RNUMPY fsolve: {backend} full_output requested but solver metadata "
+            "was not recorded. This happens if the host solve did not run in this "
+            "Python call (for example under JAX jit/vmap)."
+        )
+    extras = meta.get("n_solves", 1)
+    if extras > 1:
+        raise RuntimeError(
+            "RNUMPY fsolve: full_output is not supported when the host solve ran "
+            "more than once in this call (batched/vmap). Request the solution "
+            "array only, or call fsolve on one problem at a time."
+        )
+    return info
+
+def _copy_fsolve_info(infodict, ier, mesg):
+    info = {}
+    for key, value in dict(infodict).items():
+        if isinstance(value, np.ndarray):
+            info[key] = np.array(value, copy=True)
+        else:
+            info[key] = value
+    return info, int(ier), str(mesg)
+
+def _torch_ad_jacobian(func, x_np, args_tuple, dtype, device):
+    """Jacobian of a Torch residual on a fresh local graph, then discarded."""
     import torch as tr
 
+    detached_args = _detach_torch_args(args_tuple)
+    x = tr.tensor(_as_1d_numpy(x_np), dtype=dtype, device=device)
+
+    def objective(x_v):
+        residual = func(rp.array(x_v, dtype=dtype, device=device), *detached_args)
+        return tr.as_tensor(residual, dtype=dtype, device=device).reshape(-1)
+
+    with tr.enable_grad():
+        jac = tr.autograd.functional.jacobian(objective, x.detach(), create_graph=False, strict=False)
+    n_x = int(x.numel())
+    n_res = int(objective(x.detach()).numel())
+    return np.asarray(jac.detach().cpu().numpy(), dtype=float).reshape(n_res, n_x)
+
+def _torch_ift_param_grads(func, args_template, params_in, grad_x, dt, x_sol_np):
+    """Implicit-function-theorem parameter gradients on a local Torch graph.
+
+    The solve itself is not on this graph. Inputs are detached, so an outer
+    optimizer that calls this backward does not keep the residual tape.
+    """
+    import torch as tr
+
+    if grad_x is None:
+        return [None] * len(params_in)
     if x_sol_np is None:
         raise RuntimeError("RNUMPY fsolve: missing concrete solution in backward context")
 
-    gx_np = to_numpy(grad_x).ravel()
+    device = next((p.device for p in params_in if hasattr(p, "device")), None)
+    gx = tr.as_tensor(grad_x.detach(), dtype=dt, device=device).reshape(-1)
+    detached_saved = [p.detach() for p in params_in]
+    args_detached = _replace_tensors(args_template, detached_saved, {'idx': 0})
+    jac_np = _torch_ad_jacobian(func, x_sol_np, args_detached, dt, device)
+    jac = tr.tensor(jac_np, dtype=dt, device=device)
+    try:
+        lam = tr.linalg.solve(jac.mT, gx)
+    except RuntimeError:
+        lam = tr.linalg.lstsq(jac.mT, gx.unsqueeze(-1)).solution.reshape(-1)
 
-    def eval_f(x_v, p_values):
-        current_args = _replace_tensors(args_template, p_values, {'idx': 0})
-        return to_numpy(func(rp.array(x_v, dtype=dt), *current_args)).ravel()
-
-    jx = finite_diff_jacobian(lambda xv: eval_f(xv, params_in), x_sol_np)
-    lam = np.linalg.lstsq(jx.T, gx_np, rcond=None)[0]
+    live = []
+    rebuilt = []
+    indices = []
+    for i, p in enumerate(params_in):
+        if getattr(p, "requires_grad", False):
+            leaf = p.detach().requires_grad_(True)
+            live.append(leaf)
+            rebuilt.append(leaf)
+            indices.append(i)
+        else:
+            rebuilt.append(p.detach())
 
     grad_params = [None] * len(params_in)
-    for i, p in enumerate(params_in):
-        if not getattr(p, 'requires_grad', False):
-            continue
-        p_np = to_numpy(p).astype(float).ravel()
+    if not live:
+        return grad_params
 
-        def eval_f_p(p_flat):
-            mp = list(params_in)
-            mp[i] = tr.as_tensor(p_flat.reshape(p.shape), dtype=p.dtype, device=p.device)
-            return eval_f(x_sol_np, mp)
+    with tr.enable_grad():
+        x = tr.tensor(_as_1d_numpy(x_sol_np), dtype=dt, device=device)
+        current_args = _replace_tensors(args_template, rebuilt, {'idx': 0})
+        residual = func(rp.array(x, dtype=dt, device=device), *current_args)
+        residual = tr.as_tensor(residual, dtype=dt, device=device).reshape(-1)
+        sensitivity = tr.dot(-lam.detach(), residual)
+        if sensitivity.requires_grad:
+            grads = tr.autograd.grad(sensitivity, live, allow_unused=True)
+        else:
+            grads = (None,) * len(live)
 
-        jp = finite_diff_jacobian(eval_f_p, p_np)
-        grad_np = -jp.T @ lam
-        grad_params[i] = tr.as_tensor(grad_np.reshape(p.shape), dtype=p.dtype, device=p.device)
+    for i, g in zip(indices, grads):
+        grad_params[i] = tr.zeros_like(params_in[i]) if g is None else g.detach()
     return grad_params
 
-def _build_fsolve_scipy_callbacks(func, args_tuple, fprime=None):
-    """Build NumPy-only fun/fprime callbacks for SciPy fsolve (no AD tracing)."""
-    concrete_args = _jax_concrete_args(args_tuple) if rp.use_jax else args_tuple
+def _build_fsolve_scipy_callbacks(func, args_tuple, fprime=None, dtype=None, device=None):
+    """NumPy callbacks for SciPy's fsolve.
 
-    def fun_np(x_v):
-        res = func(rp.array(x_v), *concrete_args)
-        if rp.use_jax:
-            import jax
-            return to_numpy(jax.device_get(res))
-        if rp.use_torch:
-            import torch as tr
-            return to_numpy(tr.as_tensor(res).detach().cpu().numpy())
-        return to_numpy(res)
+    JAX and Torch Jacobians are automatic derivatives of the residual.
+    Those graphs are local to the callback: values are detached before they
+    are handed back to SciPy, so an outer optimizer cannot tape the iterations.
+    NumPy mode has no AD and keeps a central difference.
+    """
+    if rp.use_jax:
+        import jax
+        import jax.numpy as jnp
+        concrete_args = _jax_concrete_args(args_tuple)
 
-    if fprime is not None:
-        def fprime_np(x_v):
-            res = fprime(rp.array(x_v), *concrete_args)
-            if rp.use_jax:
-                import jax
-                return to_numpy(jax.device_get(res))
-            if rp.use_torch:
-                import torch as tr
-                return to_numpy(tr.as_tensor(res).detach().cpu().numpy())
-            return to_numpy(res)
+        def fun_np(x_v):
+            residual = func(rp.array(_as_1d_numpy(x_v)), *concrete_args)
+            return np.asarray(jax.device_get(residual), dtype=float).reshape(-1)
+
+        if fprime is None:
+            def objective(x_v):
+                return jnp.ravel(func(rp.array(jnp.ravel(x_v)), *concrete_args))
+
+            jac_fn = jax.jit(jax.jacobian(objective))
+
+            def fprime_np(x_v):
+                jac = jac_fn(jnp.asarray(_as_1d_numpy(x_v)))
+                return np.asarray(jax.device_get(jac), dtype=float)
+        else:
+            def fprime_np(x_v):
+                residual = fprime(rp.array(_as_1d_numpy(x_v)), *concrete_args)
+                return np.asarray(jax.device_get(residual), dtype=float)
         return fun_np, fprime_np
 
-    def fprime_np(x_v):
-        return finite_diff_jacobian(fun_np, x_v)
+    if rp.use_torch:
+        import torch as tr
+        detached_args = _detach_torch_args(args_tuple)
 
+        def fun_np(x_v):
+            with tr.no_grad():
+                residual = func(
+                    rp.array(_as_1d_numpy(x_v), dtype=dtype, device=device),
+                    *detached_args,
+                )
+            return _as_1d_numpy(residual)
+
+        if fprime is None:
+            def fprime_np(x_v):
+                return _torch_ad_jacobian(func, x_v, detached_args, dtype, device)
+        else:
+            def fprime_np(x_v):
+                with tr.no_grad():
+                    residual = fprime(
+                        rp.array(_as_1d_numpy(x_v), dtype=dtype, device=device),
+                        *detached_args,
+                    )
+                return np.asarray(to_numpy(residual), dtype=float)
+        return fun_np, fprime_np
+
+    def fun_np(x_v):
+        residual = func(rp.array(_as_1d_numpy(x_v)), *args_tuple)
+        return _as_1d_numpy(residual)
+
+    if fprime is None:
+        def fprime_np(x_v):
+            return finite_diff_jacobian(fun_np, _as_1d_numpy(x_v))
+    else:
+        def fprime_np(x_v):
+            return np.asarray(to_numpy(fprime(rp.array(_as_1d_numpy(x_v)), *args_tuple)), dtype=float)
     return fun_np, fprime_np
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -986,86 +1106,124 @@ def fminbound(func, x1, x2, args=(), xtol=1e-05, maxfun=500, full_output=0, disp
         return so.fminbound(func, x1, x2, args=args, xtol=xtol, maxfun=maxfun, full_output=full_output, disp=disp)
 
 def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49012e-08, maxfev=0, band=None, epsfcn=None, factor=100, diag=None):
+    """Find a root of ``func(x, *args) = 0``.
+
+    JAX and Torch use automatic derivatives of the residual for the solver
+    Jacobian and for implicit-function gradients. Residuals must be real-valued.
+    ``full_output=True`` is recorded from the host SciPy solve and is not
+    available under JAX ``vmap`` or when that host solve does not run in this
+    Python call.
+    """
     if not isinstance(args, tuple):
         args = (args,)
+    # A Jacobian we build is d f_i / d x_j. SciPy only expects the transpose
+    # when the caller supplied fprime and set col_deriv.
+    active_col_deriv = col_deriv if fprime is not None else 0
     if rp.use_jax:
         import jax
         import jax.numpy as jnp
-        # jax.config.update("jax_check_tracer_leaks", True)
-        
+
+        meta = {}
         args_flat, args_tree = jax.tree_util.tree_flatten(args)
-        
-        @jax.custom_jvp
-        def _jax_fsolve(x0_in, *a_flat):
-            current_args = jax.tree_util.tree_unflatten(args_tree, a_flat)
+        static_leaves = []
+        array_leaves = []
+        for leaf in args_flat:
+            if isinstance(leaf, jax.Array):
+                static_leaves.append(_MISSING)
+                array_leaves.append(leaf)
+            else:
+                static_leaves.append(leaf)
+
+        def _merge_leaves(dyn_leaves):
+            dyn = iter(dyn_leaves)
+            merged = [next(dyn) if leaf is _MISSING else leaf for leaf in static_leaves]
+            return jax.tree_util.tree_unflatten(args_tree, merged)
+
+        def _host_solve(x0_host, *dyn_leaves):
+            # Host-side solve. JAX stages this callback, so the iterations are
+            # not part of an outer jit or grad trace.
+            current_args = _merge_leaves(dyn_leaves)
             fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, current_args, fprime=fprime)
-            res = so.fsolve(fun_np, to_numpy(x0_in), args=(), fprime=fprime_np, full_output=True,
-                            col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band,
-                            epsfcn=epsfcn, factor=factor, diag=diag)
-            x_sol, infodict, ier, mesg = res
-            return jnp.array(x_sol)
+            x_sol_np, infodict, ier, mesg = so.fsolve(
+                fun_np, _as_1d_numpy(x0_host), args=(), fprime=fprime_np, full_output=True,
+                col_deriv=active_col_deriv, xtol=xtol, maxfev=maxfev, band=band,
+                epsfcn=epsfcn, factor=factor, diag=diag,
+            )
+            meta["n_solves"] = meta.get("n_solves", 0) + 1
+            meta["info"] = _copy_fsolve_info(infodict, ier, mesg)
+            return np.asarray(x_sol_np, dtype=np.dtype(x0_host.dtype))
+
+        @jax.custom_jvp
+        def _jax_fsolve(x0_in, *dyn_leaves):
+            result_shape = jax.ShapeDtypeStruct(tuple(x0_in.reshape(-1).shape), x0_in.dtype)
+            return jax.pure_callback(
+                _host_solve, result_shape, x0_in, *dyn_leaves, vmap_method="sequential",
+            )
 
         @_jax_fsolve.defjvp
         def _jax_fsolve_jvp(primals, tangents):
             params_p = primals[1:]
             params_t = tangents[1:]
             x_sol = _jax_fsolve(*primals)
-            
-            def objective(x_v, *p_v):
-                current_args = jax.tree_util.tree_unflatten(args_tree, p_v)
-                return func(rp.array(x_v), *current_args).ravel()
 
-            Jx = jax.jacobian(objective, argnums=0)(x_sol, *params_p)
-            _ , f_p_tangent = jax.jvp(lambda *p: objective(x_sol, *p), params_p, params_t)
-            
-            dx = -jnp.linalg.solve(Jx, f_p_tangent)
+            def objective(x_v, *dyn):
+                current_args = _merge_leaves(dyn)
+                return func(rp.array(jnp.ravel(x_v)), *current_args).ravel()
+
+            jac_x = jax.jacobian(objective, argnums=0)(x_sol, *params_p)
+            _, f_p_tangent = jax.jvp(lambda *dyn: objective(x_sol, *dyn), params_p, params_t)
+            dx = -jnp.linalg.solve(jac_x, f_p_tangent)
             return x_sol, dx
 
-        x_sol = _jax_fsolve(x0, *args_flat)
-        
+        x0_flat = jnp.ravel(jnp.asarray(x0))
+        x_sol = _jax_fsolve(x0_flat, *array_leaves)
+
         if full_output:
-            def get_metadata():
-                fun_np, fprime_np = _build_fsolve_scipy_callbacks(
-                    func, jax.tree_util.tree_map(jax.lax.stop_gradient, args), fprime=fprime
-                )
-                return so.fsolve(fun_np, to_numpy(x0), args=(), fprime=fprime_np, full_output=True,
-                                 col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band,
-                                 epsfcn=epsfcn, factor=factor, diag=diag)
-            
-            try:
-                xs, infodict, ier, mesg = get_metadata()
-                return rp.array(x_sol), _convert_optimize_result(infodict), ier, mesg
-            except Exception:
-                return rp.array(x_sol), {}, 1, "Success"
-        else:
-            return rp.array(x_sol)
+            infodict, ier, mesg = _require_fsolve_info(meta, "JAX")
+            return rp.array(x_sol), _convert_optimize_result(infodict), ier, mesg
+        return rp.array(x_sol)
 
     elif rp.use_torch:
         import torch as tr
-        
+
+        meta = {}
         params = _find_tensors(args)
-        dt = x0.dtype if hasattr(x0, 'dtype') else (params[0].dtype if params else tr.get_default_dtype())
+        if hasattr(x0, "dtype"):
+            dt = x0.dtype
+        else:
+            dt = params[0].dtype if params else tr.get_default_dtype()
+        if hasattr(x0, "device"):
+            device = x0.device
+        elif params:
+            device = params[0].device
+        else:
+            device = None
 
         class FSolve(tr.autograd.Function):
             @staticmethod
             def forward(x0_in, *params_in):
+                # no_grad is already on inside Function.forward. Keep the
+                # residual callbacks on detached inputs so a local Jacobian
+                # graph cannot attach to an outer optimizer tape.
                 detached_params = tuple(p.detach() for p in params_in)
                 current_args = _replace_tensors(args, detached_params, {'idx': 0})
-                fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, current_args, fprime=fprime)
-
-                res = so.fsolve(fun_np, to_numpy(tr.as_tensor(x0_in).detach().cpu().numpy()), args=(), fprime=fprime_np,
-                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev,
-                                 band=band, epsfcn=epsfcn, factor=factor, diag=diag)
-                x_sol_np, infodict, ier, mesg = res
-                x_sol = tr.as_tensor(x_sol_np, dtype=dt)
-                _torch_aux_store[id(x_sol)] = np.array(x_sol_np, copy=True)
-                return x_sol
+                fun_np, fprime_np = _build_fsolve_scipy_callbacks(
+                    func, current_args, fprime=fprime, dtype=dt, device=device,
+                )
+                x_sol_np, infodict, ier, mesg = so.fsolve(
+                    fun_np, _as_1d_numpy(x0_in), args=(), fprime=fprime_np, full_output=True,
+                    col_deriv=active_col_deriv, xtol=xtol, maxfev=maxfev, band=band,
+                    epsfcn=epsfcn, factor=factor, diag=diag,
+                )
+                meta["n_solves"] = meta.get("n_solves", 0) + 1
+                meta["info"] = _copy_fsolve_info(infodict, ier, mesg)
+                return tr.tensor(np.array(x_sol_np, dtype=float, copy=True), dtype=dt, device=device)
 
             @staticmethod
             def setup_context(ctx, inputs, output):
                 x0_in, *params_in = inputs
                 ctx.save_for_backward(*params_in)
-                ctx.x_sol_np = _torch_aux_store.pop(id(output), None)
+                ctx.x_sol_np = np.array(output.detach().cpu().numpy(), copy=True)
 
             @staticmethod
             def backward(ctx, grad_x):
@@ -1073,32 +1231,21 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0, col_deriv=0, xtol=1.49
                 grad_params = _torch_ift_param_grads(func, args, params_in, grad_x, dt, ctx.x_sol_np)
                 return (None, *grad_params)
 
-        params = _find_tensors(args)
         x_sol = FSolve.apply(x0, *params)
-        
         if full_output:
-            def get_metadata():
-                current_args = _replace_tensors(args, [p.detach() for p in params], {'idx': 0})
-                fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, current_args, fprime=fprime)
-                return so.fsolve(fun_np, to_numpy(tr.as_tensor(x0).detach().cpu().numpy()), args=(), fprime=fprime_np,
-                                 full_output=True, col_deriv=col_deriv, xtol=xtol, maxfev=maxfev,
-                                 band=band, epsfcn=epsfcn, factor=factor, diag=diag)
-            
-            xs, infodict, ier, mesg = get_metadata()
+            infodict, ier, mesg = _require_fsolve_info(meta, "Torch")
             return rp.array(x_sol, dtype=dt), _convert_optimize_result(infodict), ier, mesg
-        else:
-            return rp.array(x_sol, dtype=dt)
-    
+        return rp.array(x_sol, dtype=dt)
+
     else:
         fun_np, fprime_np = _build_fsolve_scipy_callbacks(func, args, fprime=fprime)
-        res = so.fsolve(fun_np, to_numpy(x0), args=(), fprime=fprime_np, full_output=full_output,
-                         col_deriv=col_deriv, xtol=xtol, maxfev=maxfev, band=band,
+        res = so.fsolve(fun_np, _as_1d_numpy(x0), args=(), fprime=fprime_np, full_output=full_output,
+                         col_deriv=active_col_deriv, xtol=xtol, maxfev=maxfev, band=band,
                          epsfcn=epsfcn, factor=factor, diag=diag)
         if full_output:
             x, infodict, ier, mesg = res
             return rp.array(x), _convert_optimize_result(infodict), ier, mesg
-        else:
-            return rp.array(res)
+        return rp.array(res)
 
 def root(fun, x0, args=(), method='hybr', jac=None, tol=None, callback=None, options=None):
     if not isinstance(args, tuple):
