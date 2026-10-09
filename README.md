@@ -44,20 +44,26 @@ dot_product = rnp.dot(x, y)
 print(dot_product)  # Output will match JAX
 ```
 
-To use NumPy only:
+### Choosing the backend
+RNUMPY uses NumPy by default. Switch backends at any time:
 ```python
 import RNUMPY as rnp
 
-# rnp defaults to JAX unless told otherwise, change at anytime
-rnp.use_jax = False
+rnp.use_jax = True     # JAX (requires jax)
+rnp.enable_x64()       # JAX and torch default to 32-bit floats; enable 64-bit to match NumPy
 
-# Compatible with both JAX and NumPy
-x = rnp.array([1, 2, 3])
-y = rnp.array([4, 5, 6])
+rnp.use_jax = False    # back to NumPy (the default)
+```
 
-# Perform operations
-dot_product = rnp.dot(x, y)
-print(dot_product)  # Output will match NumPy
+### Index updates
+In-place writes such as `x[0] = 1.0` are not differentiable. Write `x = x.at[0].set(1.0)` instead, as in JAX.
+For arrays that may be plain `numpy.ndarray` (which have no `.at`), use the function form:
+```python
+import numpy as np
+import RNUMPY as rnp
+
+x = np.zeros((4, 3))
+x = rnp.at(x)[:, 1].set(2.0)   # a modified copy; x.at[:, 1].set(2.0) for a JAX array
 ```
 
 ## Ethos
