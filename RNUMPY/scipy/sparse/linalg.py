@@ -13,7 +13,7 @@ import RNUMPY as rp
 j   = rp.jax_handle
 np  = rp.numpy_handle
 sp  = rp.scipy_handle
-jnp = j.numpy 
+jnp = j.numpy if j is not None else None
 
 def bisgstab():     raise NotImplementedError 
 def cg():           raise NotImplementedError 

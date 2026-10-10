@@ -2,9 +2,13 @@
 # (c) Copyright 2024 Aerospace Research Community LLC
 
 # Created:  Nov 2024 E. Botero
-# Modified: 
+## Modified: Mar 2026, E. Botero
 
 import numpy as np
+try:
+    import torch
+except ImportError:
+    torch = None
 
 # ----------------------------------------------------------------------------------------------------------------------
 #  Basic Array Setup, a la JAX
@@ -38,41 +42,89 @@ class _IndexUpdateRef:
 
     def set(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index] = values
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, values)
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, values)
+        return res
 
     def apply(self, func, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        raise('Not Implemented')
+        raise NotImplementedError('Not Implemented')
 
     def add(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index]+=values
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, res[self.index] + values)
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, res[self.index] + values)
+        return res
 
     def subtract(self, values, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        self.array[self.index]-=values
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, res[self.index] - values)
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, res[self.index] - values)
+        return res
 
     def multiply(self, values, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        self.array[self.index]*=values
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, res[self.index] * values)
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, res[self.index] * values)
+        return res
 
     mul = multiply
 
     def divide(self, values, *, indices_are_sorted=False, unique_indices=False,
                 mode=None):
-        self.array[self.index]/=values
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, res[self.index] / values)
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, res[self.index] / values)
+        return res
 
     def power(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index]**=values
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, res[self.index] ** values)
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, res[self.index] ** values)
+        return res
 
     def min(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index] = np.minimum(self.array[self.index],values)
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, torch.minimum(res[self.index], torch.as_tensor(values)))
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, np.minimum(res[self.index], values))
+        return res
 
     def max(self, values, *, indices_are_sorted=False, unique_indices=False,
             mode=None):
-        self.array[self.index] = np.maximum(self.arrays[self.index],values)
+        if torch is not None and isinstance(self.array, torch.Tensor):
+            res = self.array.clone()
+            torch.Tensor.__setitem__(res, self.index, torch.maximum(res[self.index], torch.as_tensor(values)))
+        else:
+            res = self.array.copy()
+            np.ndarray.__setitem__(res, self.index, np.maximum(res[self.index], values))
+        return res
   
 
 _array_operators = {}

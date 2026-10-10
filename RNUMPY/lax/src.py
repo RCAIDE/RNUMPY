@@ -12,7 +12,8 @@ import RNUMPY as rp
 
 j   = rp.jax_handle
 np  = rp.numpy_handle
-jnp = j.numpy
+tr  = rp.torch_handle
+jnp = j.numpy if j else None
 
 def cond(pred, true_fun, false_fun, *operands, operand=object()):
 
@@ -33,4 +34,4 @@ def scan(f,init,xs=None,length=None,reverse=False, unroll=1, _split_transpose=Fa
         for x in xs:
             carry, y = f(carry, x)
             ys.append(y)
-        return carry, np.stack(ys)
+        return carry, rp.stack(ys)
