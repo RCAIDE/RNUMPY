@@ -64,3 +64,55 @@ def test_at_torch_returns_modified_clone():
     y = rp.at(x)[0].set(1.0)
     assert isinstance(y, torch.Tensor)
     assert float(y[0]) == 1.0 and float(x[0]) == 0.0
+
+
+_METHODS = {
+    "set":      lambda cur, v: v,
+    "add":      lambda cur, v: cur + v,
+    "subtract": lambda cur, v: cur - v,
+    "multiply": lambda cur, v: cur * v,
+    "divide":   lambda cur, v: cur / v,
+    "power":    lambda cur, v: cur ** v,
+    "min":      np.minimum,
+    "max":      np.maximum,
+}
+_INDICES = {"slice": (slice(1, 3),), "column": (slice(None), 1), "entry": (2, 0)}
+
+
+def _sample():
+    return np.linspace(0.5, 2.0, 12).reshape(4, 3)
+
+
+@pytest.mark.parametrize("index", list(_INDICES))
+@pytest.mark.parametrize("method", list(_METHODS))
+def test_at_numpy_methods_match_reference(method, index):
+    rp = _reset_rp()
+    x = _sample()
+    idx = _INDICES[index]
+    expected = x.copy()
+    expected[idx] = _METHODS[method](expected[idx], 1.5)
+    out = getattr(rp.at(x)[idx], method)(1.5)
+    assert type(out) is np.ndarray
+    assert np.array_equal(out, expected)
+    assert np.array_equal(x, _sample())
+
+
+@pytest.mark.parametrize("index", list(_INDICES))
+def test_at_get(index):
+    rp = _reset_rp()
+    x = _sample()
+    assert np.array_equal(rp.at(x)[_INDICES[index]].get(), x[_INDICES[index]])
+
+
+@needs_jax
+@pytest.mark.parametrize("index", list(_INDICES))
+@pytest.mark.parametrize("method", list(_METHODS))
+def test_at_numpy_matches_jax(method, index):
+    import jax.numpy as jnp
+    rp = _reset_rp()
+    rp.enable_x64()
+    x = _sample()
+    idx = _INDICES[index]
+    out_np = getattr(rp.at(x)[idx], method)(1.5)
+    out_jax = getattr(rp.at(jnp.asarray(x))[idx], method)(1.5)
+    np.testing.assert_allclose(out_np, np.asarray(out_jax), rtol=1e-14, atol=0)
