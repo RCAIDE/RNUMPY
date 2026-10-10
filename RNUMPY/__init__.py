@@ -646,3 +646,15 @@ from . import scipy
 from . import random
 
 
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Index updates for any array
+# ----------------------------------------------------------------------------------------------------------------------  
+from ._basearrays import _IndexUpdateHelper
+
+def at(array):
+    """Returns the index-update helper of any array: at(x)[idx].set(v) is x.at[idx].set(v) for a JAX array,
+    and a modified copy of the same type for a numpy array or torch tensor."""
+    if jarray is not None and isinstance(array, jarray):
+        return array.at
+    return _IndexUpdateHelper(array)
