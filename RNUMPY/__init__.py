@@ -47,7 +47,7 @@ except ImportError:
 # Set the default environment
 use_jax      = False
 use_torch    = False
-ensure_differentiable = True
+ensure_differentiable = False   # True: in-place writes on RNUMPY arrays raise, with the differentiable replacement
 
 # Set pi
 pi = 3.141592653589793
@@ -643,6 +643,16 @@ from .linalg import *
 from .lax import *
 from .autograd import *
 from . import scipy
+
+# SciPy names that 0.1.0 exported at the top level (rp.minimize, rp.erf, ...); they also live under rp.scipy
+from .scipy import (
+    OptimizeResults, RegularGridInterpolator, beta, betainc, betaln, block_diag, cho_factor, cho_solve, dct,
+    dctn, digamma, eigh_tridiagonal, entr, erf, erfc, erfinv, exp1, expi, expit, expm, expm_frechet, expn,
+    factorial, fft, fresnel, fsolve, funm, gamma, gammainc, gammaincc, gammaln, hessenberg, hilbert, i0e, i1,
+    i1e, idct, idctn, integrate, interpolate, log_ndtr, log_softmax, logit, logsumexp, lu, lu_factor,
+    lu_solve, minimize, multigammaln, ndtr, ndtri, optimize, poch, polar, polygamma, rsf2csf, schur, softmax,
+    solve_triangular, sparse, spatial, special, sqrtm, toeplitz, xlog1py, xlogy, zeta,
+)
 from . import random
 
 

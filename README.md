@@ -57,6 +57,7 @@ rnp.use_jax = False    # back to NumPy (the default)
 
 ### Index updates
 In-place writes such as `x[0] = 1.0` are not differentiable. Write `x = x.at[0].set(1.0)` instead, as in JAX.
+Set `rnp.ensure_differentiable = True` to make in-place writes on RNUMPY arrays raise an error that shows the replacement (off by default).
 For arrays that may be plain `numpy.ndarray` (which have no `.at`), use the function form:
 ```python
 import numpy as np
